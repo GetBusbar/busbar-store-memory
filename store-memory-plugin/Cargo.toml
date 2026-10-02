@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-store-memory-plugin"
+version = "1.5.0"
+publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "First-party signed kind:store plugin cdylib: the in-memory governance store, packaged as a droppable busbar plugin exporting busbar_plugin_door."
+license = "Apache-2.0"
+
+[lib]
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
+# rlib: what `cargo test` links, and what makes it emit the cdylib the conformance test loads.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door` is the door this image exports.
+busbar-store-memory = { path = "../store-memory" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
+
+[dev-dependencies]
+# The conformance test loads the linked door and dlopens the built cdylib over the REAL loader.
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
+tokio = { version = "1", features = ["rt"] }
