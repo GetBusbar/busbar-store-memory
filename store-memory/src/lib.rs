@@ -6,12 +6,11 @@
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
-//! BOTH DOORS, ONE CONSTRUCTOR (#2): [`open`] is what a build that links this crate registers
-//! ([`linked::STORE`]) and what the dropped-in `cdylib` answers `busbar_open` with (feature
-//! `dropped-in`, the [`exports`] module). Unsafe code is denied crate-wide; the one exception is the
-//! door module the contract's export macro generates, whose C-ABI symbols cannot be written without it.
+//! BOTH DOORS, ONE TABLE (#2): [`door`] (store v3) is what a build that links this crate registers,
+//! and what the sibling `busbar-store-memory-plugin` cdylib exports as its image's one symbol
+//! (`export_door!`). This crate exports no symbol and holds no `unsafe`.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
@@ -926,8 +925,7 @@ impl Store for MemoryStore {
 }
 
 /// Open this store. It reads no configuration, so every body opens the same fresh RAM store — the
-/// ONE constructor both doors reach: the linked row ([`linked::STORE`]) calls it in process, and the
-/// dropped-in `cdylib` calls it from `busbar_open` ([`exports`]).
+/// constructor the linked row ([`linked::STORE`]) calls in process.
 pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
     Ok(Box::new(MemoryStore::new()))
 }
@@ -935,34 +933,9 @@ pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
-/// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
+/// (the plugin crate's `export_door!`): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
 pub use v3::door;
-
-/// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
-/// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
-/// exported symbol is `#[unsafe(no_mangle)]`.
-#[cfg(feature = "dropped-in")]
-#[allow(unsafe_code)]
-pub mod door_export {
-    busbar_contract::export_door!(crate::v3::door);
-}
-
-// M6: the legacy cold export below goes with the cold ABI (TODO M6 COLD-DELETE). It is kept only as
-// the in-tree subject of the legacy store adapter's tests; production never loads it.
-/// THE LEGACY COLD DOOR (feature `cold-dropped-in`): [`open`] exported through the contract's cold
-/// store export macro. The frozen symbols the loader looks up are the contract's. Unsafe code is
-/// allowed here because the C-ABI boundary functions the macro generates are
-/// `unsafe extern "C-unwind"` by the cold ABI's own definition.
-#[cfg(feature = "cold-dropped-in")]
-#[allow(unsafe_code)]
-pub mod exports {
-    busbar_contract::abi::sdk::export_store_plugin!(super::open);
-}
-
-/// The legacy cold door's boundary as a LINKED entry (the loader's legacy both-ways proof).
-#[cfg(feature = "cold-dropped-in")]
-pub use exports::BUSBAR_COLD_ENTRY;
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
 /// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
