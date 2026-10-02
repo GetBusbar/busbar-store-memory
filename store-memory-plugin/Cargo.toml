@@ -16,9 +16,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # THE LOGIC, same repo: its `door` is the door this image exports.
 busbar-store-memory = { path = "../store-memory" }
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
+busbar-contract = { workspace = true }
 
 [dev-dependencies]
 # The conformance test loads the linked door and dlopens the built cdylib over the REAL loader.
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
-tokio = { version = "1", features = ["rt"] }
+busbar-plugin-loader = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }

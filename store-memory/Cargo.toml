@@ -16,10 +16,10 @@ crate-type = ["rlib"]
 
 [dependencies]
 # The ONE busbar crate a plugin names. Pinned by git rev to the busbar commit in `.busbar-ref`.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
+busbar-contract = { workspace = true }
 
 [dev-dependencies]
 # The `Store` contract conformance suites live in this crate's own tests (no shared test util
 # between plugins); they serialise typed rows into the opaque record body exactly as core does.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
