@@ -149,7 +149,7 @@ fn the_linked_and_the_dropped_in_door_are_one_store() {
     let linked = script(&open(Door::Linked), None);
     let dropped = script(&open(Door::Dropped), None);
     assert_eq!(linked, dropped, "both doors answer alike");
-    assert!(linked[1].contains("ephemeral: true"), "{linked:?}");
+    assert!(linked[0].contains("ephemeral: true"), "{linked:?}");
     assert!(linked[3].contains("key-1"), "{linked:?}");
     assert!(linked[4].ends_with("Ok(None)"), "{linked:?}");
     assert!(linked[7].contains("one"), "{linked:?}");
