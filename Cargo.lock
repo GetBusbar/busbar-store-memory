@@ -124,6 +124,8 @@ dependencies = [
  "busbar-contract",
  "busbar-plugin-loader",
  "busbar-store-memory",
+ "busbar-store-memory-plugin",
+ "serde_json",
  "tokio",
 ]
 
