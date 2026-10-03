@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   ci:
-    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@a50b0cfa614357f6080d1e07ea06fd275038fc8b
+    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@ad5348c785fdf6466a8ff6a831133115fc1089f9
     with:
       service: none
       busbar_checkout: false
@@ -29,7 +29,7 @@ jobs:
     secrets: inherit
   release:
     needs: ci
-    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@a50b0cfa614357f6080d1e07ea06fd275038fc8b
+    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@ad5348c785fdf6466a8ff6a831133115fc1089f9
     with:
       plugin_crate: busbar-store-memory-plugin
       manifest_name: busbar-store-memory
@@ -45,7 +45,7 @@ jobs:
   consumer-verify:
     needs: release
     if: ${{ !cancelled() }}
-    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@a50b0cfa614357f6080d1e07ea06fd275038fc8b
+    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@ad5348c785fdf6466a8ff6a831133115fc1089f9
     with:
       version: ${{ github.ref_name }}
       asset_prefix: busbar-store-memory
