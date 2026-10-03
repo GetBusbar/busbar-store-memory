@@ -23,5 +23,5 @@ publish = false
 repository = "https://github.com/GetBusbar/busbar-store-memory"
 
 [workspace.dependencies]
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "ad5348c785fdf6466a8ff6a831133115fc1089f9" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "ad5348c785fdf6466a8ff6a831133115fc1089f9" }
