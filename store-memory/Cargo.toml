@@ -9,17 +9,37 @@ description = "The default in-memory (RAM) backend for busbar's durable governan
 license = "Apache-2.0"
 
 [lib]
-# rlib: the LINKED door (`door`, the store v3 table), which a busbar build names as a compiled-in
-# row. The dropped-in door is the sibling `busbar-store-memory-plugin` cdylib, which exports this
-# same door as its one symbol; this crate exports none.
+# rlib: the COMPILED-IN door (the composition root holds this crate's store v3 `door`). The
+# DROPPED-IN door is the sibling `busbar-store-memory-plugin` cdylib: its `dropped-in` /
+# `cold-dropped-in` features switch on the two below, so the one `export_door!` (and the one cold
+# `export_store_plugin!`) stays this crate's source, and no build can define a door symbol twice.
 crate-type = ["rlib"]
 
+[features]
+# THE DROPPED-IN DOOR (`door_export`): this crate's store v3 `door` exported as the image's ONE symbol
+# (`busbar_plugin_door`) through the contract's `export_door!`. OFF in a build that links this crate
+# (the compiled-in row holds the same `door`); the dropped-in artifact is the plugin crate's cdylib:
+# `cargo build -p busbar-store-memory-plugin --release --features dropped-in`.
+dropped-in = []
+# M6: THE LEGACY COLD DOOR (`exports`), the cold store ABI's frozen symbols through
+# `export_store_plugin!`. Kept only as the subject of busbar's legacy store adapter's tests (through
+# `busbar-store-memory-plugin`'s `cold-dropped-in`) until M6 deletes the cold ABI; production never
+# loads it. `tests/dropped_in_door.rs` pins it: `cargo test -p busbar-store-memory --features cold-dropped-in`.
+cold-dropped-in = []
+
 [dependencies]
-# The ONE busbar crate a plugin names. Pinned by git rev to the busbar commit in `.busbar-ref`.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
+# The record half of the store protocol. `busbar_contract::abi::sdk::store::StoreSlots` declares `record_put`,
+# `record_get` and `record_scan` for a plane's kernel-held durable records, and this backend answers
+# them at the contract's own spelling. busbar-contract is the ONE busbar crate a plugin names, pinned
+# by git rev to the busbar commit in `.busbar-ref` (the workspace row).
+busbar-contract = { workspace = true }
 
 [dev-dependencies]
 # The `Store` contract conformance suites live in this crate's own tests (no shared test util
-# between plugins); they serialise typed rows into the opaque record body exactly as core does.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# between plugins); they serialise typed rows into the opaque `PlaneRecord` body exactly as core
+# does, which is the whole of what they need from serde.
+# The store kind's shared epoch and slice-life cases (`busbar_contract::testkit::store_v3`), which
+# every store runs; the test kit is dev-only (`test-seal`: no test kit ships).
+busbar-contract = { workspace = true, features = ["test-seal"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -10,15 +10,33 @@ license = "Apache-2.0"
 
 [lib]
 # cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
-# rlib: what `cargo test` links, and what makes it emit the cdylib the conformance test loads.
+# rlib: what `cargo test` links, and what makes `cargo test` emit the cdylib the conformance test
+# loads (a cdylib-only package builds a trivial test harness and never produces the library).
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# THE DROPPED-IN DOOR: the logic crate's store v3 `door` exported as this image's ONE symbol,
+# `busbar_plugin_door`, by the logic crate's own `export_door!` (its `door_export` module, behind
+# ITS `dropped-in`). Forwarded, not restated: one `export_door!` in the source, so no build that
+# switches both crates' features on can define the symbol twice. OFF by default (a busbar build
+# that links the store carries no door symbol); the dropped-in artifact is built
+# `cargo build --release -p busbar-store-memory-plugin --features dropped-in`, and `cargo test` names
+# this crate below with it on so the cdylib the conformance test opens carries the door.
+dropped-in = ["busbar-store-memory/dropped-in"]
+# M6: THE LEGACY COLD DOOR, forwarded the same way: the logic crate's `exports` module
+# (`export_store_plugin!`) and its `BUSBAR_COLD_ENTRY`, re-exported here, so busbar's plugin-loader
+# names this crate (rlib: the linked cold entry; cdylib: the dropped cold door) for its cold-lane
+# both-ways proof until M6 deletes the cold ABI. Production never loads it.
+cold-dropped-in = ["busbar-store-memory/cold-dropped-in"]
 
 [dependencies]
 # THE LOGIC, same repo: its `door` is the door this image exports.
 busbar-store-memory = { path = "../store-memory" }
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
 
 [dev-dependencies]
-# The conformance test loads the linked door and dlopens the built cdylib over the REAL loader.
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "a50b0cfa614357f6080d1e07ea06fd275038fc8b" }
-tokio = { version = "1", features = ["rt"] }
+# The conformance test opens this crate's own cdylib WITH its dropped-in door on (see `[features]`).
+busbar-store-memory-plugin = { path = ".", features = ["dropped-in"] }
+# The published conformance suite (`conformance_suite!`): it loads the linked door and dlopens the
+# built cdylib over busbar's REAL loader. Dev-only, never in the shipped artifact; same pinned rev,
+# so one busbar source resolves.
+busbar-plugin-loader = { workspace = true, features = ["conformance"] }
