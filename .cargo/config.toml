@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# ONE TEST THREAD. busbar's published store conformance script (busbar-plugin-loader's
+# `conformance/store.rs` at the pin) mints each leg's op ids from PROCESS-GLOBAL counters
+# (`MINT_NODE` / `MINT_NEXT`), reset at every leg's open. The suite's tests each drive store legs,
+# so under the test harness's default parallelism one test's reset rewinds another's counter
+# mid-leg, a leg mints an op id it already used for another payload, and the store answers
+# STORE_OPID_CONFLICT (seen on the macOS leg: `append e1: ! store error: STORE_OPID_CONFLICT`).
+# Serial runs are deterministic; every test still runs. Drop this once the suite serializes its
+# store legs itself. An explicit RUST_TEST_THREADS in the environment wins.
+[env]
+RUST_TEST_THREADS = "1"
