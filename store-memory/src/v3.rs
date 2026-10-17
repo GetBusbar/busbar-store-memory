@@ -4,9 +4,10 @@
 //! The store v3 slots this backend answers beyond the 1.5.5 op set ([`StoreSlots`]): the
 //! `op_id`-carrying writes, the ledger ops, the money slots and `window_caps`.
 //!
-//! DEDUPE (`abi::store` S1-S4): every `op_id` this store APPLIED is remembered, with the op's value
-//! fields and its answer, for [`OP_ID_RETENTION_SECS`]. A replay with the same value fields applies
-//! nothing and answers the original; different value fields are a conflict. The dedupe log, the
+//! DEDUPE (`abi::store` S1-S4): every `op_id` this store APPLIED is remembered, with a SHA-256
+//! digest of the op's value fields and its answer, for [`OP_ID_RETENTION_SECS`]. The digest is fixed
+//! size, so what the log keeps per op does not grow with what the op wrote. A replay with the same
+//! value fields applies nothing and answers the original; different value fields are a conflict. The dedupe log, the
 //! caps, the drawn totals and the slices live under ONE lock, and an op's dedupe check, its effect
 //! and its record happen under it, so two racing calls with one `op_id` apply once. This store is
 //! EPHEMERAL (its Statement tail says so): the log is lost on restart together with everything it
@@ -24,6 +25,7 @@
 //! is 1.5.5's, cited on `abi::store::ReserveIn`.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
 use busbar_contract::abi::sdk::conn::Host;
@@ -79,9 +81,30 @@ enum Answer {
     Released(Vec<u64>),
 }
 
-/// One remembered op: its value fields and its answer.
+/// The SHA-256 digest of an op's value fields, as their text renders them.
+type Body = [u8; 32];
+
+/// A [`std::fmt::Write`] that feeds what is written into a digest, so the text is never held.
+struct Feed(sha2::Sha256);
+
+impl std::fmt::Write for Feed {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        sha2::Digest::update(&mut self.0, s.as_bytes());
+        Ok(())
+    }
+}
+
+/// The [`Body`] of the value fields `args` render.
+fn body(args: std::fmt::Arguments<'_>) -> Body {
+    let mut feed = Feed(<sha2::Sha256 as sha2::Digest>::new());
+    // Writing into a digest cannot fail.
+    let _ = feed.write_fmt(args);
+    sha2::Digest::finalize(feed.0).into()
+}
+
+/// One remembered op: the digest of its value fields and its answer.
 struct Recorded {
-    body: String,
+    body: Body,
     answer: Answer,
 }
 
@@ -105,8 +128,9 @@ struct Inner {
     /// `0`. Kept as long as an `op_id` is (`OP_ID_RETENTION_SECS`), then forgotten.
     closed: HashMap<u64, u64>,
     next_slice: u64,
-    /// `stream -> its records`; the head's `seq` is the count.
-    journals: HashMap<String, Vec<RecordBytes>>,
+    /// `stream -> its head's seq`, the count of records appended to it. `heads` is the one read of a
+    /// stream, so its records are not kept.
+    journals: HashMap<String, u64>,
     /// `session -> (node, principal)`.
     sessions: HashMap<u64, (String, String)>,
 }
@@ -125,16 +149,16 @@ enum Seen {
 }
 
 impl Inner {
-    fn seen(&self, op: OpId, body: &str) -> Seen {
+    fn seen(&self, op: OpId, body: &Body) -> Seen {
         match self.ops.get(&op) {
             None => Seen::New,
-            Some(r) if r.body == body => Seen::Replay(r.answer.clone()),
+            Some(r) if r.body == *body => Seen::Replay(r.answer.clone()),
             Some(_) => Seen::Conflict,
         }
     }
 
     /// Remember an APPLIED op, and forget every op past its retention.
-    fn record(&mut self, now: u64, op: OpId, body: String, answer: Answer) {
+    fn record(&mut self, now: u64, op: OpId, body: Body, answer: Answer) {
         while let Some(&(at, old)) = self.aged.front() {
             if at.saturating_add(OP_ID_RETENTION_SECS) > now {
                 break;
@@ -150,6 +174,64 @@ impl Inner {
 impl State {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Purge every money-slot window whose `window_start < before`: its caps, its drawn counters and
+    /// the slices drawn against it. A purged slice is closed at `now`, so a later release of it
+    /// returns `0` as a closed slice's does. Returns how many windows went.
+    pub(crate) fn purge_windows_before(&self, before: u64, now: u64) -> u64 {
+        let mut inner = self.lock();
+        let mut gone: std::collections::HashSet<(String, Option<String>, u64)> =
+            std::collections::HashSet::new();
+        let mut past = |slot: &Slot| {
+            let past = slot.window_start < before;
+            if past {
+                gone.insert((slot.bucket.clone(), slot.pool.clone(), slot.window_start));
+            }
+            !past
+        };
+        inner.caps.retain(|slot, _| past(slot));
+        inner.used.retain(|slot, _| past(slot));
+        let Inner { slices, closed, .. } = &mut *inner;
+        slices.retain(|id, d| {
+            if d.slot.window_start < before {
+                closed.insert(*id, now);
+                false
+            } else {
+                true
+            }
+        });
+        gone.len() as u64
+    }
+}
+
+/// What the v3 state holds, as a test measures it.
+#[cfg(test)]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Held {
+    /// The bytes the dedupe log keeps per remembered op, summed.
+    pub(crate) op_bytes: usize,
+    /// The record bytes the ledger streams keep, summed.
+    pub(crate) journal_bytes: usize,
+    /// How many caps, slot counters and open slices are kept.
+    pub(crate) caps: usize,
+    pub(crate) used: usize,
+    pub(crate) slices: usize,
+}
+
+#[cfg(test)]
+impl State {
+    /// Test-only: what this state holds ([`Held`]).
+    pub(crate) fn held(&self) -> Held {
+        let inner = self.lock();
+        Held {
+            op_bytes: inner.ops.values().map(|r| r.body.len()).sum(),
+            // A stream keeps its count alone.
+            journal_bytes: 0,
+            caps: inner.caps.len(),
+            used: inner.used.len(),
+            slices: inner.slices.len(),
+        }
     }
 }
 
@@ -179,7 +261,7 @@ impl MemoryStore {
     fn deduped(
         &self,
         op: OpId,
-        body: String,
+        body: Body,
         apply: impl FnOnce(&Self, &mut Inner) -> OpResult<Answer>,
     ) -> OpResult<Answer> {
         let mut inner = self.v3.lock();
@@ -223,7 +305,9 @@ impl MemoryStore {
         window_start: u64,
         delta: &UsageDelta,
     ) -> OpResult<()> {
-        let body = format!("add_usage:{bucket:?}:{window_start}:{delta:?}");
+        let body = body(format_args!(
+            "add_usage:{bucket:?}:{window_start}:{delta:?}"
+        ));
         self.deduped(op, body, |s, _| {
             s.add_usage(bucket, window_start, delta).map_err(failed)?;
             Ok(Answer::Done)
@@ -232,7 +316,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()> {
-        let body = format!("add_metering:{delta:?}");
+        let body = body(format_args!("add_metering:{delta:?}"));
         self.deduped(op, body, |s, _| {
             s.add_metering(delta).map_err(failed)?;
             Ok(Answer::Done)
@@ -241,7 +325,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()> {
-        let body = format!("append_audit:{entry:?}");
+        let body = body(format_args!("append_audit:{entry:?}"));
         self.deduped(op, body, |s, _| {
             s.append_audit(entry).map_err(failed)?;
             Ok(Answer::Done)
@@ -254,7 +338,7 @@ impl MemoryStore {
         op: OpId,
         record: PlaneRecordRef<'_>,
     ) -> OpResult<()> {
-        let body = format!("append_plane_record:{:?}", record.to_record());
+        let body = body(format_args!("append_plane_record:{:?}", record.to_record()));
         self.deduped(op, body, |s, _| {
             s.append_plane_record(record).map_err(failed)?;
             Ok(Answer::Done)
@@ -268,12 +352,12 @@ impl MemoryStore {
         stream: &str,
         records: &[RecordBytes],
     ) -> OpResult<Head> {
-        let body = format!("append_batch:{stream:?}:{records:?}");
+        let body = body(format_args!("append_batch:{stream:?}:{records:?}"));
         let answer = self.deduped(op, body, |_, inner| {
-            let rows = inner.journals.entry(stream.to_string()).or_default();
-            rows.extend(records.iter().cloned());
+            let seq = inner.journals.entry(stream.to_string()).or_default();
+            *seq = seq.saturating_add(records.len() as u64);
             Ok(Answer::Head(Head {
-                seq: rows.len() as u64,
+                seq: *seq,
                 epoch: 0,
             }))
         })?;
@@ -288,11 +372,11 @@ impl MemoryStore {
         let mut heads: Vec<(String, Head)> = inner
             .journals
             .iter()
-            .map(|(s, rows)| {
+            .map(|(s, seq)| {
                 (
                     s.clone(),
                     Head {
-                        seq: rows.len() as u64,
+                        seq: *seq,
                         epoch: 0,
                     },
                 )
@@ -370,7 +454,7 @@ impl MemoryStore {
         grants: &mut impl Extend<Grant>,
     ) -> Result<(), ReserveRefused> {
         let cells: Vec<Cell<'_>> = cells.collect();
-        let body = format!("reserve:{epoch}:{cells:?}");
+        let body = body(format_args!("reserve:{epoch}:{cells:?}"));
         let mut inner = self.v3.lock();
         match inner.seen(op, &body) {
             Seen::Replay(Answer::Grants(g)) => {
@@ -430,7 +514,7 @@ impl MemoryStore {
         released: &mut impl Extend<u64>,
     ) -> OpResult<()> {
         let items: Vec<(u64, u64)> = items.collect();
-        let body = format!("slice_release:{epoch}:{items:?}");
+        let body = body(format_args!("slice_release:{epoch}:{items:?}"));
         let now = self.now();
         let answer = self.deduped(op, body, |_, inner| {
             if inner.closed.len() > 1024 {
@@ -480,7 +564,7 @@ impl MemoryStore {
         op: OpId,
         cells: &[(&str, u64, UsageDelta)],
     ) -> OpResult<()> {
-        let body = format!("add_usage_batch:{cells:?}");
+        let body = body(format_args!("add_usage_batch:{cells:?}"));
         self.deduped(op, body, |s, _| {
             // A RAM ledger cannot fail an add, so applying in order is atomic.
             for (bucket, window, delta) in cells {
@@ -492,7 +576,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
-        let body = format!("add_metering_batch:{deltas:?}");
+        let body = body(format_args!("add_metering_batch:{deltas:?}"));
         self.deduped(op, body, |s, _| {
             for d in deltas {
                 s.add_metering(d).map_err(failed)?;
@@ -503,7 +587,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()> {
-        let body = format!("append_audit_batch:{entries:?}");
+        let body = body(format_args!("append_audit_batch:{entries:?}"));
         self.deduped(op, body, |s, _| {
             s.audit_fits(entries)?;
             for e in entries {
@@ -515,7 +599,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused> {
-        let body = format!("window_caps:{caps:?}");
+        let body = body(format_args!("window_caps:{caps:?}"));
         let mut inner = self.v3.lock();
         match inner.seen(op, &body) {
             Seen::Replay(_) => return Ok(()),

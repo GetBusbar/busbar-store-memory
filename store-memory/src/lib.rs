@@ -68,10 +68,11 @@ pub struct MemoryStore {
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
-    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. Presence
-    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard.
-    /// Bounded by dropping lapsed rows on every redemption (a token past its own `expires_at` can
-    /// never be presented again, so keeping it proves nothing).
+    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. A live row
+    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard; a
+    /// lapsed row is vacant to its own key. Bounded by an amortised sweep of lapsed rows, one pass
+    /// per `SWEEP_INTERVAL` redemptions (a token past its own `expires_at` can never be presented
+    /// again, so keeping it proves nothing).
     plane_tokens: RwLock<HashMap<(String, String), u64>>,
     /// Plane records keyed by `(kind, identity, seq)`. The identity is the record's `parent` for the
     /// APPENDED child kinds (a chain is `(parent, seq)`) and its `id` for the upserted ones, which
@@ -119,6 +120,7 @@ pub struct MemoryStore {
     metering_sweep_ticker: AtomicU64,
     keys_sweep_ticker: AtomicU64,
     creds_sweep_ticker: AtomicU64,
+    tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
@@ -226,11 +228,15 @@ impl MemoryStore {
         prefix: &[u8],
         limit: u32,
     ) -> Vec<(Vec<u8>, RecordBytes)> {
+        // A SEEK to the first key at or after `(schema, prefix)`, stopping at the first key past
+        // the prefix: the map is in key order, so every row of the schema under the prefix is in
+        // that one run, and no other schema's rows are walked.
+        let from = (schema.to_string(), prefix.to_vec());
         self.records
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
+            .range(from..)
+            .take_while(|((s, k), _)| s == schema && k.starts_with(prefix))
             .take(limit as usize)
             .map(|((_, k), value)| (k.clone(), value.clone()))
             .collect()
@@ -460,6 +466,16 @@ impl Store for MemoryStore {
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
+        // The money slots' windows first (the v3 lock is always taken before a map lock), then the
+        // token ledger's.
+        let slots = self.v3.purge_windows_before(before, self.now());
+        let mut usage = self.usage();
+        let held = usage.len();
+        usage.retain(|(_, window_start), _| *window_start >= before);
+        Ok(slots + (held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -863,13 +879,33 @@ impl Store for MemoryStore {
         // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
         // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
         // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
+        // PUT-IF-ABSENT: a live row answers `false` and is left as it is, so a losing claim never
+        // moves the winner's expiry. A lapsed row is vacant to its own key: its token can never be
+        // presented again, so the claim is a new one.
         let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
-        // Lapsed rows go in the same call: a token past its own expiry can never be presented
-        // again, so retaining it only grows the map.
-        spent.retain(|_, exp| *exp > now);
-        let first = spent
-            .insert((kind.to_string(), token.to_string()), expires_at)
-            .is_none();
+        let first = match spent.entry((kind.to_string(), token.to_string())) {
+            std::collections::hash_map::Entry::Occupied(mut row) => {
+                let lapsed = *row.get() <= now;
+                if lapsed {
+                    row.insert(expires_at);
+                }
+                lapsed
+            }
+            std::collections::hash_map::Entry::Vacant(row) => {
+                row.insert(expires_at);
+                true
+            }
+        };
+        // The other lapsed rows go in an amortised sweep, as every other map's do: a redemption
+        // runs once per inbound request that carries a replay key, so it does not walk the map.
+        let sweep_needed = self
+            .tokens_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            spent.retain(|_, exp| *exp > now);
+        }
         Ok(first)
     }
 
