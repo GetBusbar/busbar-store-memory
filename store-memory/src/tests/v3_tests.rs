@@ -509,3 +509,69 @@ impl busbar_contract::testkit::store_v3::Harness for SingleNode {
 fn the_single_node_rule_and_the_release_rule_hold() {
     busbar_contract::testkit::store_v3::single_node_store(&SingleNode);
 }
+
+/// THE DEDUPE LOG HOLDS A FIXED-SIZE RECORD PER OP (the store dedupe rule: "same" means the op's
+/// value fields, kept at least `OP_ID_RETENTION_SECS`). Production mints a fresh `op_id` for every
+/// write, so whatever the log keeps per op is kept for every write the node makes for a day: it must
+/// not grow with the size of what was written. Sixty-four 500-byte records rendered as text held
+/// over 100 KiB in the log; the log keeps a digest of the value fields instead.
+#[test]
+fn the_dedupe_log_keeps_a_fixed_size_record_per_op() {
+    let s = MemoryStore::new();
+    let big: Vec<RecordBytes> = (0..64)
+        .map(|_| RecordBytes::new(vec![0xab; 500]).expect("record"))
+        .collect();
+    s.v3_append_batch(op(1), "journal", &big).expect("append");
+    let held = s.v3.held().op_bytes;
+    assert!(held <= 64, "one op keeps {held} bytes in the dedupe log");
+    // The digest still tells the same op from a different one.
+    s.v3_append_batch(op(1), "journal", &big).expect("replay");
+    assert!(matches!(
+        s.v3_append_batch(op(1), "journal", &big[..1]),
+        Err(OpRefused::Conflict)
+    ));
+}
+
+/// A LEDGER STREAM KEEPS ITS HEAD, NOT ITS ROWS. `heads` is the one read of a stream, and it reads
+/// only the count, so a stream's records are not kept.
+#[test]
+fn a_ledger_stream_keeps_its_head_and_not_its_rows() {
+    let s = MemoryStore::new();
+    let big = || RecordBytes::new(vec![0xcd; 500]).expect("record");
+    let head = s
+        .v3_append_batch(op(1), "journal", &[big(), big()])
+        .expect("append");
+    assert_eq!(head.seq, 2);
+    assert_eq!(s.v3.held().journal_bytes, 0, "the stream's rows are kept");
+    assert_eq!(s.v3_heads().expect("heads")[0].1.seq, 2);
+}
+
+/// THE WINDOW SWEEP COVERS THE MONEY SLOTS (`Store::purge_windows_before`: "purge every window
+/// whose `window_start < before`"). A past window's cap, its drawn counter and the slices drawn
+/// against it go with it; a later release of such a slice returns `0`, as a closed slice's does, and
+/// a draw against the purged window finds no cap.
+#[test]
+fn purging_a_window_drops_its_caps_counters_and_slices() {
+    let s = capped(Dimension::Requests, 10);
+    s.add_usage("b", 1_000, &delta(1, 1)).expect("usage");
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
+    let purged = Store::purge_windows_before(&s, 2_000).expect("purge");
+    assert!(purged >= 1, "nothing was purged");
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used, held.slices), (0, 0, 0), "{held:?}");
+    assert_eq!(s.get_usage("b", 1_000).expect("read").requests, 0);
+    assert_eq!(
+        release(&s, op(2), 0, &[(g[0].slice_id, 2)]).expect("release"),
+        vec![0]
+    );
+    assert!(matches!(
+        reserve(&s, op(3), 0, &[cell(Dimension::Requests, 1)]),
+        Err(ReserveRefused::NoCap { cell: 0 })
+    ));
+    // A window at or after `before` is kept.
+    let s = capped(Dimension::Requests, 10);
+    reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
+    Store::purge_windows_before(&s, 1_000).expect("purge");
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used, held.slices), (1, 1, 1), "{held:?}");
+}

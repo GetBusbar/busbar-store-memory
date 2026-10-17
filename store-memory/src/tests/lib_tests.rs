@@ -740,9 +740,9 @@ fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused()
 }
 
 /// The spent-token ledger is bounded by the tokens' own expiry: a row past its `expires_at` can
-/// never be presented again, so redeeming anything sweeps the lapsed rows out in the same call.
-/// The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is its own
-/// single-use grant rather than a collision.
+/// never be presented again, so the amortised sweep drops lapsed rows, once every `SWEEP_INTERVAL`
+/// redemptions. The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is
+/// its own single-use grant rather than a collision.
 #[test]
 fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
     let s = MemoryStore::new();
@@ -752,14 +752,64 @@ fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
     // Same nonce, different kind: a separate grant, not the same spent row.
     assert!(s.redeem_plane_token("other", "n1", 100, 50).unwrap());
 
-    // Past its own expiry the row is dropped — nothing upstream can present it again anyway, and
-    // keeping it only grows the map.
-    assert!(s.redeem_plane_token("ask", "n2", 300, 200).unwrap());
+    // Past its own expiry the row is dropped by the sweep — nothing upstream can present it again
+    // anyway, and keeping it only grows the map.
+    for i in 0..SWEEP_INTERVAL {
+        assert!(s
+            .redeem_plane_token("ask", &format!("m{i}"), 300, 200)
+            .unwrap());
+    }
+    assert!(
+        s.plane_tokens
+            .read()
+            .unwrap()
+            .keys()
+            .all(|(_, t)| t != "n1"),
+        "the two lapsed rows must be swept within one sweep interval"
+    );
+}
+
+/// A LOSING REDEMPTION CHANGES NOTHING (`records.claim` is "a one-time put-if-absent with a time to
+/// live", the one path for approval redemption and replay refusal). The loser's own expiry must not
+/// replace the winner's: a shorter one would free the key inside the winner's window, so the same
+/// approval could be redeemed twice; a longer one would keep it blocked past it.
+#[test]
+fn a_losing_redemption_leaves_the_winners_expiry() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 1_000, 0).unwrap());
+    // A replay with a short time to live loses, and must not shorten the winner's claim.
+    assert!(!s.redeem_plane_token("ask", "n1", 10, 0).unwrap());
+    assert!(
+        !s.redeem_plane_token("ask", "n1", 2_000, 500).unwrap(),
+        "the key was won a second time inside the first winner's window"
+    );
+    // A replay with a long time to live loses, and must not extend it.
+    assert!(s.redeem_plane_token("ask", "n3", 100, 0).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n3", 5_000, 50).unwrap());
+    assert!(
+        s.redeem_plane_token("ask", "n3", 6_000, 100).unwrap(),
+        "a lapsed claim stays blocked by a loser's expiry"
+    );
+}
+
+/// A REDEMPTION DOES NOT WALK THE SPENT MAP. The inbound replay check redeems once per request that
+/// carries a replay key, so a redemption that swept every live row under the map's exclusive guard
+/// made each request O(live tokens). A lapsed row is vacant at its own lookup instead, and the sweep
+/// is amortised.
+#[test]
+fn a_redemption_does_not_sweep_the_spent_map() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "a", 100, 0).unwrap());
+    assert!(s.redeem_plane_token("ask", "b", 100, 0).unwrap());
+    assert!(s.redeem_plane_token("ask", "c", 1_000, 200).unwrap());
     assert_eq!(
         s.plane_tokens.read().unwrap().len(),
-        1,
-        "the two lapsed rows must be swept by the redemption that came after them"
+        3,
+        "one redemption swept the whole spent map"
     );
+    // The lapsed row is vacant to its own key.
+    assert!(s.redeem_plane_token("ask", "a", 1_000, 200).unwrap());
+    assert!(!s.redeem_plane_token("ask", "a", 1_000, 300).unwrap());
 }
 
 /// AN ACTIVE WORK HANDLE IS NEVER EVICTED (`BUSBAR-1.6.0.md` THE DESIGN §1, "Admission bounds live
@@ -998,4 +1048,41 @@ fn a_record_blob_comes_back_byte_exact() {
     let scan = s.record_scan(SCHEMA, b"cell/k/", 10).expect("scan");
     assert_eq!(scan.len(), 1);
     assert_eq!(scan[0].1.as_slice(), blob.as_slice());
+}
+
+/// A RECORD SCAN SEEKS ITS OWN SCHEMA AND PREFIX. A plane's `records.list` scans its schema on every
+/// call, beside the node journal's rows under another schema, which grow for the life of the
+/// process. A scan that walked the whole map from its first key cost every call O(all rows of all
+/// schemas) under the map's read guard. Twenty thousand scans of a one-row schema beside 200 000 rows
+/// of another take a few milliseconds with a seek and many seconds with a walk.
+#[test]
+fn a_record_scan_seeks_its_schema_and_prefix() {
+    let s = MemoryStore::new();
+    let body = RecordBytes::new(vec![1]).expect("record");
+    for i in 0u32..200_000 {
+        s.record_put_at("z.other", &i.to_be_bytes(), &body);
+    }
+    s.record_put_at("a.mine", b"k1", &body);
+    s.record_put_at("a.mine", b"x1", &body);
+    let started = std::time::Instant::now();
+    for _ in 0..20_000 {
+        let rows = s.record_scan_at("a.mine", b"k", u32::MAX);
+        assert_eq!(rows.len(), 1);
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "20000 scans of a one-row prefix took {took:?}"
+    );
+    // The seek answers exactly what the walk did, in key order, within the limit.
+    s.record_put_at("a.mine", b"k0", &body);
+    let keys: Vec<Vec<u8>> = s
+        .record_scan_at("a.mine", b"k", 10)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys, vec![b"k0".to_vec(), b"k1".to_vec()]);
+    assert_eq!(s.record_scan_at("a.mine", b"", 2).len(), 2);
+    assert_eq!(s.record_scan_at("a.mine", b"k", 0).len(), 0);
+    assert_eq!(s.record_scan_at("a.min", b"", 10).len(), 0);
 }

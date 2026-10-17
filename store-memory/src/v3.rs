@@ -153,6 +153,40 @@ impl State {
     }
 }
 
+/// What the v3 state holds, as a test measures it.
+#[cfg(test)]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Held {
+    /// The bytes the dedupe log keeps per remembered op, summed.
+    pub(crate) op_bytes: usize,
+    /// The record bytes the ledger streams keep, summed.
+    pub(crate) journal_bytes: usize,
+    /// How many caps, slot counters and open slices are kept.
+    pub(crate) caps: usize,
+    pub(crate) used: usize,
+    pub(crate) slices: usize,
+}
+
+#[cfg(test)]
+impl State {
+    /// Test-only: what this state holds ([`Held`]).
+    pub(crate) fn held(&self) -> Held {
+        let inner = self.lock();
+        Held {
+            op_bytes: inner.ops.values().map(|r| r.body.len()).sum(),
+            journal_bytes: inner
+                .journals
+                .values()
+                .flatten()
+                .map(|r| r.as_slice().len())
+                .sum(),
+            caps: inner.caps.len(),
+            used: inner.used.len(),
+            slices: inner.slices.len(),
+        }
+    }
+}
+
 /// The 1.5.5 admission test for one cell (`abi::store::ReserveIn`, GRANT SIZE): whether drawing
 /// `amount` onto `used` under `cap` is refused. `used + amount` is checked: an overflow refuses.
 fn exhausted(dimension: u32, used: u64, amount: u64, cap: u64) -> bool {
