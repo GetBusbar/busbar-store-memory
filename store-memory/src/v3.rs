@@ -19,7 +19,8 @@
 //! stale one (the `epoch` a caller states is accepted as given) and grants slices that never expire
 //! (`valid_until_ms = u64::MAX`): no other node can draw against its windows. A store a fleet shares
 //! persists and fences the epoch and bounds every slice. A release, here as everywhere, returns at
-//! most what the slice has left, and a slice with nothing left returns `0`.
+//! most what the slice has left, and a slice with nothing left returns `0`. A release with nothing
+//! unspent closes the slice: its unit spent the rest, so nothing is left.
 //!
 //! GRANT SIZE: a cell grants its whole `amount` or the reserve fails; the per-dimension test
 //! is 1.5.5's, cited on `abi::store::ReserveIn`.
@@ -539,7 +540,9 @@ impl MemoryStore {
                 let back = unspent.min(d.left);
                 d.left -= back;
                 let slot = d.slot.clone();
-                if d.left == 0 {
+                // Nothing left to return, or nothing unspent to return it from: the slice closes
+                // (its unit spent the rest; "it closes when nothing is left").
+                if d.left == 0 || unspent == 0 {
                     inner.slices.remove(&id);
                     inner.closed.insert(id, now);
                 }
