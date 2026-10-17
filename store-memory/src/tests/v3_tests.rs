@@ -575,3 +575,34 @@ fn purging_a_window_drops_its_caps_counters_and_slices() {
     let held = s.v3.held();
     assert_eq!((held.caps, held.used, held.slices), (1, 1, 1), "{held:?}");
 }
+
+/// A SLICE WHOSE UNSPENT REACHES ZERO CLOSES AT ONCE (abi::store money.rs: "it closes when nothing is
+/// left"; ARCHITECT ruling on the memory store's spent slices). A unit that spent its whole grant
+/// releases `0`: nothing is left to return, so the slice closes then, and a later release of it
+/// returns `0`, rather than staying open for the life of its window.
+#[test]
+fn a_slice_released_with_nothing_unspent_closes_at_once() {
+    let s = capped(Dimension::Requests, 10);
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
+    assert_eq!(
+        release(&s, op(2), 0, &[(g[0].slice_id, 0)]).expect("release"),
+        vec![0]
+    );
+    assert_eq!(s.v3.held().slices, 0, "a fully spent slice stays open");
+    // Closed: a later release of it returns nothing, and the spent units stay drawn.
+    assert_eq!(
+        release(&s, op(3), 0, &[(g[0].slice_id, 2)]).expect("release"),
+        vec![0]
+    );
+    assert!(matches!(
+        reserve(&s, op(4), 0, &[cell(Dimension::Requests, 9)]),
+        Err(ReserveRefused::Exhausted { cell: 0 })
+    ));
+    // A partial release still leaves the slice open for the rest.
+    let g = reserve(&s, op(5), 0, &[cell(Dimension::Requests, 4)]).expect("draw");
+    assert_eq!(
+        release(&s, op(6), 0, &[(g[0].slice_id, 1)]).expect("release"),
+        vec![1]
+    );
+    assert_eq!(s.v3.held().slices, 1);
+}
