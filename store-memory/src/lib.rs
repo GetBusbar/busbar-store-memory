@@ -6,10 +6,11 @@
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
-//! BOTH DOORS, ONE CONSTRUCTOR (#2): [`open`] is what a build that links this crate registers
-//! ([`linked::STORE`]) and what the dropped-in `cdylib` answers `busbar_open` with (feature
-//! `dropped-in`, the [`exports`] module). Unsafe code is denied crate-wide; the one exception is the
-//! door module the contract's export macro generates, whose C-ABI symbols cannot be written without it.
+//! ONE DOOR, COMPILED IN OR DROPPED IN (#2, THE DESIGN §2): [`door`] is what a build that links
+//! this crate registers ([`linked::STORE`]) and what the dropped-in `cdylib` exports (feature
+//! `dropped-in`, the `door_export` module). Unsafe code is denied crate-wide; the one exception is
+//! the door module the contract's export macro generates, whose C-ABI symbols cannot be written
+//! without it.
 
 #![deny(unsafe_code)]
 
@@ -30,14 +31,13 @@ use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Retention ceiling for `usage`/`metering` rows, keyed by their epoch-second period-start field
-/// (`window_start` / `bucket`). Mirrors `busbar::governance`'s own 31-day `max_window` sweep of its
-/// in-memory rate-map cells (`crates/busbar-core/src/governance/mod.rs`): this store's ledgers are a
-/// durability shadow of that engine state, so retaining them exactly as long as the engine keeps
-/// its own cells is the right correspondence, not an arbitrary shorter/longer number.
+/// (`window_start` / `bucket`): 31 days, the governance engine's own `max_window` for its in-memory
+/// rate cells, which this store's ledgers shadow for durability, so they are kept exactly as long
+/// as the engine keeps its own cells.
 const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 
-/// Amortized sweep cadence: one `retain()` pass per this many writes. Mirrors
-/// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar-core/src/config/mod.rs`).
+/// Amortized sweep cadence: one `retain()` pass per this many writes, the governance engine's own
+/// rate-sweep interval.
 const SWEEP_INTERVAL: u64 = 256;
 
 /// The `records` map: `(schema, key) -> body`, in KEY ORDER because `record_scan` promises a
@@ -122,7 +122,7 @@ pub struct MemoryStore {
     creds_sweep_ticker: AtomicU64,
     tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
-    /// mutation to `keys`/`creds`/the denylist.
+    /// mutation to `keys`/`creds`; a denylist write does not bump it.
     revision: AtomicU64,
     /// Test-only pinned clock for the retention sweep. `0` (the `Default`) means "use the real wall
     /// clock" (`now()`); any non-zero value pins `self.now()` to that epoch-second so a test can make
@@ -469,13 +469,13 @@ impl Store for MemoryStore {
     }
 
     fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
-        // The money slots' windows first (the v3 lock is always taken before a map lock), then the
-        // token ledger's.
-        let slots = self.v3.purge_windows_before(before, self.now());
+        // THE TOKEN LEDGER'S retention sweep (`RecordStore::purge_windows_before`), and nothing
+        // else: its cutoff is the ledger's, and a money slot's window is keyed in its own unit, with
+        // window 0 never rolling. The money windows are bounded where they roll (`v3_window_caps`).
         let mut usage = self.usage();
         let held = usage.len();
         usage.retain(|(_, window_start), _| *window_start >= before);
-        Ok(slots + (held - usage.len()) as u64)
+        Ok((held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -933,13 +933,6 @@ impl Store for MemoryStore {
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
-}
-
-/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
-/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
-/// constructor is the Rust-side twin a test drives directly.
-pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
-    Ok(Box::new(MemoryStore::new()))
 }
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
