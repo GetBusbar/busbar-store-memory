@@ -1086,3 +1086,41 @@ fn a_record_scan_seeks_its_schema_and_prefix() {
     assert_eq!(s.record_scan_at("a.mine", b"k", 0).len(), 0);
     assert_eq!(s.record_scan_at("a.min", b"", 10).len(), 0);
 }
+
+/// THE PURGE HONOURS THE RETENTION RULE IT IS HANDED (coordinator ruling (b)), never one inferred
+/// from the kind's name: a `task` kind declared `Age` loses its old ACTIVE row, and another kind
+/// declared `TerminalOnly` keeps its old ACTIVE row and loses only its old TERMINAL one. RED before
+/// the override: the trait's default purged nothing under `TerminalOnly`, and `Age` kept a `task`
+/// row that was not terminal.
+#[test]
+fn a_purge_honours_the_retention_it_is_handed_never_the_kinds_name() {
+    let s = MemoryStore::new();
+    let mut active = plane_task("t-active", PlaneDisposition::Active);
+    active.ts = 5;
+    s.upsert_plane_record(active.view()).unwrap();
+    assert_eq!(
+        s.purge_plane_records("task", 10, Retention::Age).unwrap(),
+        1
+    );
+    assert!(
+        s.get_plane_record("task", "t-active").unwrap().is_none(),
+        "a task kind declared age loses its old active row"
+    );
+
+    for (id, disposition) in [
+        ("o-active", PlaneDisposition::Active),
+        ("o-terminal", PlaneDisposition::Terminal),
+    ] {
+        let mut r = plane_task(id, disposition);
+        r.kind = "order".to_string();
+        r.ts = 5;
+        s.upsert_plane_record(r.view()).unwrap();
+    }
+    assert_eq!(
+        s.purge_plane_records("order", 10, Retention::TerminalOnly)
+            .unwrap(),
+        1
+    );
+    assert!(s.get_plane_record("order", "o-active").unwrap().is_some());
+    assert!(s.get_plane_record("order", "o-terminal").unwrap().is_none());
+}
