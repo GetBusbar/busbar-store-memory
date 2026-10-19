@@ -96,7 +96,7 @@ fn the_memory_store_states_it_is_ephemeral_and_refuses_forks() {
     assert_eq!(
         <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::TAIL,
         busbar_contract::abi::sdk::store::Tail {
-            ephemeral: true,
+            durable: busbar_contract::abi::sdk::store::DURABLE_NOT_CLAIMED,
             durable_plane: false,
             fork_refusal: true,
         }

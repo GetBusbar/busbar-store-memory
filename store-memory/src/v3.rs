@@ -32,13 +32,13 @@ use std::sync::{Mutex, MutexGuard};
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{
     Cap, CapsRefused, Cell, CellKey, Dimension, Grant, Op, OpRefused, OpResult, ReserveRefused,
-    Scanned, Step, StoreSlots, Tail,
+    Scanned, Step, StoreSlots, Tail, DURABLE_NOT_CLAIMED,
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStore, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStore, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 use crate::MemoryStore;
@@ -654,7 +654,7 @@ impl MemoryStore {
 
 impl StoreSlots for MemoryStore {
     const TAIL: Tail = Tail {
-        ephemeral: true,
+        durable: DURABLE_NOT_CLAIMED,
         durable_plane: false,
         fork_refusal: true,
     };
@@ -996,13 +996,16 @@ impl StoreSlots for MemoryStore {
         Step::Ready(RecordStore::list_plane_record_parents(self, kind))
     }
 
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _: &mut Op<'_>,
         kind: &str,
         before: u64,
+        retention: Retention,
     ) -> Step<RecordStoreResult<u64>> {
-        Step::Ready(RecordStore::purge_plane_records_before(self, kind, before))
+        Step::Ready(RecordStore::purge_plane_records(
+            self, kind, before, retention,
+        ))
     }
 
     fn delete_plane_record(
