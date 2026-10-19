@@ -546,34 +546,117 @@ fn a_ledger_stream_keeps_its_head_and_not_its_rows() {
     assert_eq!(s.v3_heads().expect("heads")[0].1.seq, 2);
 }
 
-/// THE WINDOW SWEEP COVERS THE MONEY SLOTS (`Store::purge_windows_before`: "purge every window
-/// whose `window_start < before`"). A past window's cap, its drawn counter and the slices drawn
-/// against it go with it; a later release of such a slice returns `0`, as a closed slice's does, and
-/// a draw against the purged window finds no cap.
+/// A key of `dimension` in the window starting at `window_start` (milliseconds; `0`, the window
+/// that never rolls: the gauges and the caps that never reset).
+fn at(dimension: Dimension<'static>, window_start: u64) -> CellKey<'static> {
+    CellKey {
+        window_start,
+        ..key(dimension)
+    }
+}
+
+/// THE RETENTION SWEEP IS THE TOKEN LEDGER'S (`RecordStore::purge_windows_before`: "Retention
+/// sweep for the (bucket_id, window_start) token ledger"; Q128 store-memory, readers sm1 MEDIUM and
+/// sm2 LOW on 0db18e3): its seconds cutoff purges the ledger's windows and touches no money slot. A
+/// window-0 gauge and its live lease, and a rolling money window keyed in milliseconds, keep their
+/// caps, counters and slices. RED before the fix: the sweep took every money slot whose window
+/// start fell under the seconds cutoff, window 0's gauges and live leases among them.
 #[test]
-fn purging_a_window_drops_its_caps_counters_and_slices() {
-    let s = capped(Dimension::Requests, 10);
-    s.add_usage("b", 1_000, &delta(1, 1)).expect("usage");
-    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
-    let purged = Store::purge_windows_before(&s, 2_000).expect("purge");
-    assert!(purged >= 1, "nothing was purged");
-    let held = s.v3.held();
-    assert_eq!((held.caps, held.used, held.slices), (0, 0, 0), "{held:?}");
-    assert_eq!(s.get_usage("b", 1_000).expect("read").requests, 0);
-    assert_eq!(
-        release(&s, op(2), 0, &[(g[0].slice_id, 2)]).expect("release"),
-        vec![0]
+fn the_retention_sweep_purges_the_token_ledger_and_no_money_slot() {
+    let s = MemoryStore::new();
+    s.v3_window_caps(
+        op(1_000_000),
+        &[
+            Cap {
+                key: at(Dimension::Concurrency, 0),
+                cap: 4,
+                config_gen: 1,
+            },
+            Cap {
+                key: at(Dimension::Requests, 1_000),
+                cap: 10,
+                config_gen: 1,
+            },
+        ],
+    )
+    .expect("caps");
+    let lease = s.v3_reserve(
+        op(1),
+        0,
+        [Cell {
+            key: at(Dimension::Concurrency, 0),
+            amount: 1,
+        }]
+        .into_iter(),
+        &mut Vec::new(),
     );
-    assert!(matches!(
-        reserve(&s, op(3), 0, &[cell(Dimension::Requests, 1)]),
-        Err(ReserveRefused::NoCap { cell: 0 })
-    ));
-    // A window at or after `before` is kept.
-    let s = capped(Dimension::Requests, 10);
-    reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
-    Store::purge_windows_before(&s, 1_000).expect("purge");
+    assert!(lease.is_ok(), "{lease:?}");
+    s.add_usage("b", 1_000, &delta(1, 1)).expect("usage");
+    Store::purge_windows_before(&s, 2_000).expect("purge");
+    assert_eq!(
+        s.get_usage("b", 1_000).expect("read").requests,
+        0,
+        "the ledger window went"
+    );
     let held = s.v3.held();
-    assert_eq!((held.caps, held.used, held.slices), (1, 1, 1), "{held:?}");
+    assert_eq!((held.caps, held.used, held.slices), (2, 1, 1), "{held:?}");
+}
+
+/// ROLLING MONEY WINDOWS ARE BOUNDED (Q128 store-memory sm1 LOW): a cap pushed for a newer window
+/// of a slot's family (bucket, pool, dimension, class) retires the family's windows older than the
+/// one before it, with their counters, once no open slice draws on them; window 0 never rolls and is
+/// never retired, and a window with an open slice stays until it is released. RED before the fix:
+/// every window's cap and counter stayed for the life of the process.
+#[test]
+fn a_newer_windows_caps_retire_the_older_rolling_windows() {
+    let s = MemoryStore::new();
+    let push = |n: u64, window_start: u64| {
+        s.v3_window_caps(
+            op(1_000_000 + n),
+            &[Cap {
+                key: at(Dimension::Requests, window_start),
+                cap: 10,
+                config_gen: 1,
+            }],
+        )
+        .expect("caps");
+    };
+    s.v3_window_caps(
+        op(999),
+        &[Cap {
+            key: at(Dimension::Concurrency, 0),
+            cap: 4,
+            config_gen: 1,
+        }],
+    )
+    .expect("gauge");
+    push(1, 60_000);
+    let draw = |n: u64, window_start: u64| {
+        let mut grants = Vec::new();
+        s.v3_reserve(
+            op(n),
+            0,
+            [Cell {
+                key: at(Dimension::Requests, window_start),
+                amount: 1,
+            }]
+            .into_iter(),
+            &mut grants,
+        )
+        .expect("draw");
+        grants
+    };
+    let open = draw(10, 60_000);
+    push(2, 120_000);
+    push(3, 180_000);
+    // 60_000 holds an open slice: kept. 120_000 is the window before the newest: kept.
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used), (4, 1), "{held:?}");
+    release(&s, op(12), 0, &[(open[0].slice_id, 0)]).expect("release");
+    push(4, 240_000);
+    // 60_000 and 120_000 retire; 180_000, 240_000 and the window-0 gauge stay.
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used), (3, 0), "{held:?}");
 }
 
 /// A SLICE WHOSE UNSPENT REACHES ZERO CLOSES AT ONCE (abi::store money.rs: "it closes when nothing is
