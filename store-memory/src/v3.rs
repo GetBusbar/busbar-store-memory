@@ -657,6 +657,7 @@ impl StoreSlots for MemoryStore {
         ephemeral: true,
         durable_plane: false,
         fork_refusal: true,
+        ..Tail::ZERO
     };
 
     fn validate(_settings: &[u8]) -> Result<(), String> {
