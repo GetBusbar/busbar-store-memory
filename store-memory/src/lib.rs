@@ -17,8 +17,8 @@
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -856,6 +856,30 @@ impl Store for MemoryStore {
                 return true;
             }
             k == "task" && r.disposition != PlaneDisposition::Terminal
+        });
+        Ok((before_len - records.len()) as u64)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        // WHICH rows go is the rule the host hands with the purge, the one the kind's owner declared
+        // (coordinator ruling (b)), never one this store infers from the kind's name: under `Age`
+        // every row of `kind` older than `before`, under `TerminalOnly` only the older TERMINAL
+        // ones (an ACTIVE row is kept however old it is).
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| {
+            let goes = k == kind
+                && r.ts < before
+                && match retention {
+                    Retention::Age => true,
+                    Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
+                };
+            !goes
         });
         Ok((before_len - records.len()) as u64)
     }
