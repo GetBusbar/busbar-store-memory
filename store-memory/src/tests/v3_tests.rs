@@ -8,7 +8,6 @@
 use super::*;
 use busbar_contract::abi::sdk::store::{
     Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpRefused, OpResult, ReserveRefused,
-    StoreSlots,
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
@@ -50,20 +49,20 @@ fn reserve(
     cells: &[Cell<'_>],
 ) -> Result<Vec<Grant>, ReserveRefused> {
     let mut grants = Vec::new();
-    s.reserve(op, epoch, cells.iter().copied(), &mut grants)
+    s.v3_reserve(op, epoch, cells.iter().copied(), &mut grants)
         .map(|()| grants)
 }
 
 /// `slice_release`, its amounts collected.
 fn release(s: &MemoryStore, op: OpId, epoch: u64, items: &[(u64, u64)]) -> OpResult<Vec<u64>> {
     let mut released = Vec::new();
-    s.slice_release(op, epoch, items.iter().copied(), &mut released)
+    s.v3_slice_release(op, epoch, items.iter().copied(), &mut released)
         .map(|()| released)
 }
 
 fn capped(dimension: Dimension<'static>, c: u64) -> MemoryStore {
     let s = MemoryStore::new();
-    s.window_caps(op(1_000_000), &[cap(dimension, c, 1)])
+    s.v3_window_caps(op(1_000_000), &[cap(dimension, c, 1)])
         .expect("caps");
     s
 }
@@ -95,7 +94,7 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
 #[test]
 fn the_memory_store_states_it_is_ephemeral_and_refuses_forks() {
     assert_eq!(
-        <MemoryStore as StoreSlots>::TAIL,
+        <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::TAIL,
         busbar_contract::abi::sdk::store::Tail {
             ephemeral: true,
             durable_plane: false,
@@ -108,8 +107,8 @@ fn the_memory_store_states_it_is_ephemeral_and_refuses_forks() {
 fn a_replayed_usage_batch_applies_once() {
     let s = MemoryStore::new();
     let cells = [("k", 60, delta(1, 10))];
-    s.add_usage_batch(op(1), &cells).expect("first");
-    s.add_usage_batch(op(1), &cells)
+    s.v3_add_usage_batch(op(1), &cells).expect("first");
+    s.v3_add_usage_batch(op(1), &cells)
         .expect("replay answers the original");
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 1);
 }
@@ -118,18 +117,18 @@ fn a_replayed_usage_batch_applies_once() {
 fn equal_bodies_under_distinct_op_ids_both_apply() {
     let s = MemoryStore::new();
     let cells = [("k", 60, delta(2, 4))];
-    s.add_usage_batch(op(1), &cells).expect("a");
-    s.add_usage_batch(op(2), &cells).expect("b");
+    s.v3_add_usage_batch(op(1), &cells).expect("a");
+    s.v3_add_usage_batch(op(2), &cells).expect("b");
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 4);
 }
 
 #[test]
 fn a_reused_op_id_with_a_different_body_is_a_conflict_and_applies_nothing() {
     let s = MemoryStore::new();
-    s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("first");
     assert_eq!(
-        s.add_usage_batch(op(1), &[("k", 60, delta(5, 5))]),
+        s.v3_add_usage_batch(op(1), &[("k", 60, delta(5, 5))]),
         Err(OpRefused::Conflict)
     );
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 1);
@@ -138,9 +137,10 @@ fn a_reused_op_id_with_a_different_body_is_a_conflict_and_applies_nothing() {
 #[test]
 fn an_op_id_reused_across_slots_is_a_conflict() {
     let s = MemoryStore::new();
-    s.add_usage_op(op(1), "k", 60, &delta(1, 1)).expect("usage");
+    s.v3_add_usage_op(op(1), "k", 60, &delta(1, 1))
+        .expect("usage");
     assert_eq!(
-        s.append_audit_op(op(1), &audit(1, "a")),
+        s.v3_append_audit_op(op(1), &audit(1, "a")),
         Err(OpRefused::Conflict)
     );
     assert!(s.list_audit().expect("list").is_empty());
@@ -152,11 +152,11 @@ fn a_failed_write_is_not_recorded_so_a_retry_is_evaluated_afresh() {
     s.append_audit(&audit(1, "a")).expect("seed");
     // A fork FAILS and is not recorded under the op_id ...
     assert!(matches!(
-        s.append_audit_op(op(9), &audit(1, "forked")),
+        s.v3_append_audit_op(op(9), &audit(1, "forked")),
         Err(OpRefused::Failed(_))
     ));
     // ... so the same op_id with a different, applicable body is new, not a conflict.
-    s.append_audit_op(op(9), &audit(2, "b")).expect("fresh");
+    s.v3_append_audit_op(op(9), &audit(2, "b")).expect("fresh");
     assert_eq!(s.list_audit().expect("list").len(), 2);
 }
 
@@ -166,13 +166,13 @@ fn an_audit_batch_with_one_fork_applies_none_of_it() {
     s.append_audit(&audit(2, "a")).expect("seed");
     let batch = [audit(1, "x"), audit(2, "forked")];
     assert!(matches!(
-        s.append_audit_batch(op(1), &batch),
+        s.v3_append_audit_batch(op(1), &batch),
         Err(OpRefused::Failed(_))
     ));
     assert_eq!(s.list_audit().expect("list").len(), 1);
     // Two different records at one seq INSIDE the batch are a fork too.
     let inner = [audit(5, "x"), audit(5, "y")];
-    assert!(s.append_audit_batch(op(2), &inner).is_err());
+    assert!(s.v3_append_audit_batch(op(2), &inner).is_err());
     assert_eq!(s.list_audit().expect("list").len(), 1);
 }
 
@@ -189,7 +189,7 @@ fn a_usage_batch_applies_its_cells_in_order() {
         billable_requests: 1,
         models: vec![],
     };
-    s.add_usage_batch(op(1), &[("k", 60, neg), ("k", 60, pos)])
+    s.v3_add_usage_batch(op(1), &[("k", 60, neg), ("k", 60, pos)])
         .expect("batch");
     // The floor at zero makes order matter: -1 then +1 is 1, not 0.
     assert_eq!(s.get_usage("k", 60).expect("read").billable_requests, 1);
@@ -214,9 +214,9 @@ fn a_metering_batch_replay_applies_once() {
         priced_from_ms: 0,
         usage_units: Default::default(),
     };
-    s.add_metering_batch(op(1), std::slice::from_ref(&d))
+    s.v3_add_metering_batch(op(1), std::slice::from_ref(&d))
         .expect("a");
-    s.add_metering_batch(op(1), std::slice::from_ref(&d))
+    s.v3_add_metering_batch(op(1), std::slice::from_ref(&d))
         .expect("replay");
     let rows = s.list_metering(86_400).expect("list");
     assert_eq!(rows.iter().map(|r| r.requests).sum::<u64>(), 2);
@@ -284,7 +284,7 @@ fn an_overflowing_draw_is_exhausted_not_wrapped() {
 #[test]
 fn a_chain_draw_is_all_or_nothing() {
     let s = MemoryStore::new();
-    s.window_caps(
+    s.v3_window_caps(
         op(100),
         &[
             cap(Dimension::Requests, 10, 1),
@@ -352,7 +352,7 @@ fn a_refused_reserve_is_not_recorded() {
         reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
-    s.window_caps(op(3), &[cap(Dimension::Requests, 2, 2)])
+    s.v3_window_caps(op(3), &[cap(Dimension::Requests, 2, 2)])
         .expect("raise");
     // The same op_id is evaluated afresh and now fits.
     reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]).expect("afresh");
@@ -401,16 +401,16 @@ fn releasing_an_unknown_slice_fails_and_applies_nothing() {
 #[test]
 fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
     let s = MemoryStore::new();
-    s.window_caps(op(1), &[cap(Dimension::Requests, 1, 5)])
+    s.v3_window_caps(op(1), &[cap(Dimension::Requests, 1, 5)])
         .expect("gen 5");
-    s.window_caps(op(2), &[cap(Dimension::Requests, 99, 4)])
+    s.v3_window_caps(op(2), &[cap(Dimension::Requests, 99, 4)])
         .expect("an older generation is ignored");
     assert_eq!(
         reserve(&s, op(3), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
     assert_eq!(
-        s.window_caps(
+        s.v3_window_caps(
             op(4),
             &[
                 cap(Dimension::Requests, 3, 6),
@@ -425,7 +425,7 @@ fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
         reserve(&s, op(5), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
-    s.window_caps(op(6), &[cap(Dimension::Requests, 3, 6)])
+    s.v3_window_caps(op(6), &[cap(Dimension::Requests, 3, 6)])
         .expect("gen 6");
     reserve(&s, op(7), 0, &[cell(Dimension::Requests, 2)]).expect("cap 3");
 }
@@ -434,13 +434,13 @@ fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
 fn an_op_id_is_forgotten_after_its_retention() {
     let s = MemoryStore::new();
     s.pin_clock(1_000);
-    s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("a");
     s.pin_clock(1_000 + OP_ID_RETENTION_SECS);
     // Recording another op sweeps the expired one; the old op_id then reads as new.
-    s.add_usage_batch(op(2), &[("j", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(2), &[("j", 60, delta(1, 1))])
         .expect("b");
-    s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("new again");
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 2);
 }
@@ -450,19 +450,22 @@ fn append_batch_advances_the_stream_head_once_per_op() {
     let s = MemoryStore::new();
     let r = |b: u8| RecordBytes::new(vec![b]).expect("record");
     assert_eq!(
-        s.append_batch(op(1), "journal", &[r(1), r(2)])
+        s.v3_append_batch(op(1), "journal", &[r(1), r(2)])
             .expect("a")
             .seq,
         2
     );
     assert_eq!(
-        s.append_batch(op(1), "journal", &[r(1), r(2)])
+        s.v3_append_batch(op(1), "journal", &[r(1), r(2)])
             .expect("replay")
             .seq,
         2
     );
-    assert_eq!(s.append_batch(op(2), "journal", &[r(3)]).expect("b").seq, 3);
-    let heads = s.heads().expect("heads");
+    assert_eq!(
+        s.v3_append_batch(op(2), "journal", &[r(3)]).expect("b").seq,
+        3
+    );
+    let heads = s.v3_heads().expect("heads");
     assert_eq!(heads.len(), 1);
     assert_eq!(heads[0].0, "journal");
     assert_eq!(heads[0].1.seq, 3);
@@ -471,17 +474,135 @@ fn append_batch_advances_the_stream_head_once_per_op() {
 #[test]
 fn sessions_are_listed_per_principal_and_removed() {
     let s = MemoryStore::new();
-    s.session_put(1, "n1", "alice").expect("put");
-    s.session_put(2, "n2", "alice").expect("put");
-    s.session_put(3, "n1", "bob").expect("put");
+    s.v3_session_put(1, "n1", "alice").expect("put");
+    s.v3_session_put(2, "n2", "alice").expect("put");
+    s.v3_session_put(3, "n1", "bob").expect("put");
     assert_eq!(
-        s.sessions_for("alice").expect("list"),
+        s.v3_sessions_for("alice").expect("list"),
         vec![(1, "n1".to_string()), (2, "n2".to_string())]
     );
-    s.session_remove(1).expect("remove");
-    s.session_remove(1).expect("absent is Ok");
+    s.v3_session_remove(1).expect("remove");
+    s.v3_session_remove(1).expect("absent is Ok");
     assert_eq!(
-        s.sessions_for("alice").expect("list"),
+        s.v3_sessions_for("alice").expect("list"),
         vec![(2, "n2".to_string())]
     );
+}
+
+/// The store kind's shared cases, as a NODE-LOCAL store runs them: one constant epoch, slices that
+/// never expire, and a release that applies once per slice and closes it
+/// (`busbar_contract::testkit::store_v3`).
+struct SingleNode;
+
+impl busbar_contract::testkit::store_v3::Harness for SingleNode {
+    type Store = MemoryStore;
+    fn open(&self) -> MemoryStore {
+        MemoryStore::new()
+    }
+    fn now_ms(&self) -> u64 {
+        0
+    }
+    fn advance_ms(&self, _: u64) {}
+}
+
+#[test]
+fn the_single_node_rule_and_the_release_rule_hold() {
+    busbar_contract::testkit::store_v3::single_node_store(&SingleNode);
+}
+
+/// THE DEDUPE LOG HOLDS A FIXED-SIZE RECORD PER OP (the store dedupe rule: "same" means the op's
+/// value fields, kept at least `OP_ID_RETENTION_SECS`). Production mints a fresh `op_id` for every
+/// write, so whatever the log keeps per op is kept for every write the node makes for a day: it must
+/// not grow with the size of what was written. Sixty-four 500-byte records rendered as text held
+/// over 100 KiB in the log; the log keeps a digest of the value fields instead.
+#[test]
+fn the_dedupe_log_keeps_a_fixed_size_record_per_op() {
+    let s = MemoryStore::new();
+    let big: Vec<RecordBytes> = (0..64)
+        .map(|_| RecordBytes::new(vec![0xab; 500]).expect("record"))
+        .collect();
+    s.v3_append_batch(op(1), "journal", &big).expect("append");
+    let held = s.v3.held().op_bytes;
+    assert!(held <= 64, "one op keeps {held} bytes in the dedupe log");
+    // The digest still tells the same op from a different one.
+    s.v3_append_batch(op(1), "journal", &big).expect("replay");
+    assert!(matches!(
+        s.v3_append_batch(op(1), "journal", &big[..1]),
+        Err(OpRefused::Conflict)
+    ));
+}
+
+/// A LEDGER STREAM KEEPS ITS HEAD, NOT ITS ROWS. `heads` is the one read of a stream, and it reads
+/// only the count, so a stream's records are not kept.
+#[test]
+fn a_ledger_stream_keeps_its_head_and_not_its_rows() {
+    let s = MemoryStore::new();
+    let big = || RecordBytes::new(vec![0xcd; 500]).expect("record");
+    let head = s
+        .v3_append_batch(op(1), "journal", &[big(), big()])
+        .expect("append");
+    assert_eq!(head.seq, 2);
+    assert_eq!(s.v3.held().journal_bytes, 0, "the stream's rows are kept");
+    assert_eq!(s.v3_heads().expect("heads")[0].1.seq, 2);
+}
+
+/// THE WINDOW SWEEP COVERS THE MONEY SLOTS (`Store::purge_windows_before`: "purge every window
+/// whose `window_start < before`"). A past window's cap, its drawn counter and the slices drawn
+/// against it go with it; a later release of such a slice returns `0`, as a closed slice's does, and
+/// a draw against the purged window finds no cap.
+#[test]
+fn purging_a_window_drops_its_caps_counters_and_slices() {
+    let s = capped(Dimension::Requests, 10);
+    s.add_usage("b", 1_000, &delta(1, 1)).expect("usage");
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
+    let purged = Store::purge_windows_before(&s, 2_000).expect("purge");
+    assert!(purged >= 1, "nothing was purged");
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used, held.slices), (0, 0, 0), "{held:?}");
+    assert_eq!(s.get_usage("b", 1_000).expect("read").requests, 0);
+    assert_eq!(
+        release(&s, op(2), 0, &[(g[0].slice_id, 2)]).expect("release"),
+        vec![0]
+    );
+    assert!(matches!(
+        reserve(&s, op(3), 0, &[cell(Dimension::Requests, 1)]),
+        Err(ReserveRefused::NoCap { cell: 0 })
+    ));
+    // A window at or after `before` is kept.
+    let s = capped(Dimension::Requests, 10);
+    reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
+    Store::purge_windows_before(&s, 1_000).expect("purge");
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used, held.slices), (1, 1, 1), "{held:?}");
+}
+
+/// A SLICE WHOSE UNSPENT REACHES ZERO CLOSES AT ONCE (abi::store money.rs: "it closes when nothing is
+/// left"; ARCHITECT ruling on the memory store's spent slices). A unit that spent its whole grant
+/// releases `0`: nothing is left to return, so the slice closes then, and a later release of it
+/// returns `0`, rather than staying open for the life of its window.
+#[test]
+fn a_slice_released_with_nothing_unspent_closes_at_once() {
+    let s = capped(Dimension::Requests, 10);
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("draw");
+    assert_eq!(
+        release(&s, op(2), 0, &[(g[0].slice_id, 0)]).expect("release"),
+        vec![0]
+    );
+    assert_eq!(s.v3.held().slices, 0, "a fully spent slice stays open");
+    // Closed: a later release of it returns nothing, and the spent units stay drawn.
+    assert_eq!(
+        release(&s, op(3), 0, &[(g[0].slice_id, 2)]).expect("release"),
+        vec![0]
+    );
+    assert!(matches!(
+        reserve(&s, op(4), 0, &[cell(Dimension::Requests, 9)]),
+        Err(ReserveRefused::Exhausted { cell: 0 })
+    ));
+    // A partial release still leaves the slice open for the rest.
+    let g = reserve(&s, op(5), 0, &[cell(Dimension::Requests, 4)]).expect("draw");
+    assert_eq!(
+        release(&s, op(6), 0, &[(g[0].slice_id, 1)]).expect("release"),
+        vec![1]
+    );
+    assert_eq!(s.v3.held().slices, 1);
 }

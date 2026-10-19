@@ -1,4 +1,4 @@
-<!-- fleet:header:begin (rendered by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml; edit it there) -->
+<!-- fleet:header:begin (rendered by `busbar-release plugin heal` from GetBusbar/busbar-release template/ and busbar's plugins.yaml; edit it there) -->
 # busbar-store-memory
 
 First-party signed kind:store plugin cdylib: the in-memory store, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/.
@@ -13,6 +13,8 @@ First-party signed kind:store plugin cdylib: the in-memory store, packaged as a 
 ## What it is for
 
 `busbar-store-memory` is a `kind: store` busbar plugin.
+
+Everything it holds is in RAM and lost on restart, and its RAM grows with the record count (the node journal's records are kept for the life of the process); long-lived deployments use a durable store.
 
 ## Config
 

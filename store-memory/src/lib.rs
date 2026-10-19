@@ -6,11 +6,12 @@
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
-//! BOTH DOORS, ONE TABLE (#2): [`door`] (store v3) is what a build that links this crate registers,
-//! and what the sibling `busbar-store-memory-plugin` cdylib exports as its image's one symbol
-//! (`export_door!`). This crate exports no symbol and holds no `unsafe`.
+//! BOTH DOORS, ONE CONSTRUCTOR (#2): [`open`] is what a build that links this crate registers
+//! ([`linked::STORE`]) and what the dropped-in `cdylib` answers `busbar_open` with (feature
+//! `dropped-in`, the [`exports`] module). Unsafe code is denied crate-wide; the one exception is the
+//! door module the contract's export macro generates, whose C-ABI symbols cannot be written without it.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
@@ -39,17 +40,9 @@ const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 /// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar-core/src/config/mod.rs`).
 const SWEEP_INTERVAL: u64 = 256;
 
-/// One kernel-held durable record: the opaque body a plane wrote, plus the epoch-second it was last
-/// written at. The write time is carried here because it is the ONLY age the sweep can read — see
-/// [`MemoryStore::records`] for why a record has no timestamp column of its own.
-struct RecordRow {
-    written_at: u64,
-    value: RecordBytes,
-}
-
-/// The `records` map: `(schema, key) -> RecordRow`, in KEY ORDER because `record_scan` promises a
+/// The `records` map: `(schema, key) -> body`, in KEY ORDER because `record_scan` promises a
 /// prefix walk answers in it.
-type RecordMap = std::collections::BTreeMap<(String, Vec<u8>), RecordRow>;
+type RecordMap = std::collections::BTreeMap<(String, Vec<u8>), RecordBytes>;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -75,10 +68,11 @@ pub struct MemoryStore {
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
-    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. Presence
-    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard.
-    /// Bounded by dropping lapsed rows on every redemption (a token past its own `expires_at` can
-    /// never be presented again, so keeping it proves nothing).
+    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. A live row
+    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard; a
+    /// lapsed row is vacant to its own key. Bounded by an amortised sweep of lapsed rows, one pass
+    /// per `SWEEP_INTERVAL` redemptions (a token past its own `expires_at` can never be presented
+    /// again, so keeping it proves nothing).
     plane_tokens: RwLock<HashMap<(String, String), u64>>,
     /// Plane records keyed by `(kind, identity, seq)`. The identity is the record's `parent` for the
     /// APPENDED child kinds (a chain is `(parent, seq)`) and its `id` for the upserted ones, which
@@ -98,36 +92,35 @@ pub struct MemoryStore {
     /// have to sort on every scan, and "the order a scan answers in" is a promise a caller reads a
     /// chain by.
     ///
-    /// BOUNDED, like every other map here, and the bound has to be carried in the VALUE. The
-    /// sibling maps age off a timestamp that is already part of the row — `window_start`, `bucket`,
-    /// `deleted_at`, `revoked_at`, a token's own `expires_at`. A record has none: its key is opaque
-    /// bytes and its value is an opaque body this backend never decodes, so there is no column to
-    /// read an age from. The row therefore carries its own WRITE TIME alongside the body, and
-    /// `record_put` sweeps against the same `MAX_RETENTION_SECS` ceiling on the same
-    /// `SWEEP_INTERVAL` ticker. Write time is the right axis: `record_put` REPLACES, so a row a
-    /// plane is still updating is refreshed by every update, and only a row nothing has touched for
-    /// 31 days ages out.
+    /// NEVER AGED OUT. An active work handle is never evicted (`BUSBAR-1.6.0.md` THE DESIGN §1,
+    /// "Admission bounds live work; nothing evicts it"): a real bound on live work is a refusal at
+    /// admission, and retention bounds only SETTLED handles. Settledness is a sidecar the store is
+    /// handed, never a body it decodes — the published path's [`PlaneDisposition`], which
+    /// `purge_plane_records_before` honours (the conformance suite's
+    /// `assert_plane_purge_task_keeps_active_rows`). A record-leg row carries no such sidecar: its
+    /// key is opaque bytes and its value an opaque body, so this backend can never know a row is
+    /// settled, and a row it cannot prove settled is one it may not drop. Write age is not
+    /// settledness: an interrupted task waiting on a human is exactly the row nothing rewrites for
+    /// the longest, and a one-time claim (`records.claim`) dropped by age is a claim that can be
+    /// made twice.
     ///
-    /// This is a BOUND, not a delete verb. `busbar_contract::abi::sdk::store::StoreSlots` declares
-    /// `record_put`/`record_get`/`record_scan` and nothing that removes a row (`purge_before` is
-    /// stream-keyed and this crate does not implement it), so a backend cannot invent one here — the
-    /// verb would exist on this store and on no other, and a caller written against it would break
-    /// on the next backend. Adding one is the contract owner's call; keeping the map unbounded until
-    /// then was not an option, because `MemoryStore` is the DEFAULT `db` backend of a long-lived
-    /// proxy process.
+    /// Nor is there a delete verb: `busbar_contract::abi::sdk::store::StoreSlots` declares
+    /// `record_put`/`record_get`/`record_scan` and nothing that removes a row, so a backend cannot
+    /// invent one here. The map's bound is the kernel's admission and its own settled-handle sweep,
+    /// not this backend's clock; and the backend is EPHEMERAL, so a restart empties it.
     records: RwLock<RecordMap>,
     /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
     /// RAM — but append-only and fork-detecting within the process's life, which is what the
     /// engine's write-through actually asks of a store. Ordered reads come from the `BTreeMap`.
     audit: RwLock<std::collections::BTreeMap<u64, AuditRecord>>,
-    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked
-    /// `creds`/`records` (see `MAX_RETENTION_SECS`). Separate per map since the maps see independent
-    /// write rates.
+    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked `creds`
+    /// (see `MAX_RETENTION_SECS`). Separate per map since the maps see independent write rates. The
+    /// `records` map has none: it is never aged out (see its doc).
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
     keys_sweep_ticker: AtomicU64,
     creds_sweep_ticker: AtomicU64,
-    records_sweep_ticker: AtomicU64,
+    tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
@@ -178,29 +171,13 @@ impl MemoryStore {
 
     /// [`Self::record_put`] under a schema named at run time (the store v3 table's `record_put`).
     pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
-        let written_at = self.now();
-        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
-        records.insert(
-            (schema.to_string(), key.to_vec()),
-            RecordRow {
-                written_at,
-                value: value.clone(),
-            },
-        );
-
-        // Amortized bounded eviction, mirroring `add_usage`/`add_metering`/`put_key`/
-        // `put_credential` above — same ceiling, same cadence, same `>` boundary. This is the map's
-        // ONLY shrink path: the contract declares no delete verb (see the field's doc), so without
-        // it nothing internal or external could ever prune a row.
-        let sweep_needed = self
-            .records_sweep_ticker
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1)
-            .is_multiple_of(SWEEP_INTERVAL);
-        if sweep_needed {
-            let n = self.now();
-            records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
-        }
+        // No age sweep rides this write: a record-leg row is never evicted by age (see the
+        // `records` field's doc), because nothing here can tell an active work handle from a
+        // settled one.
+        self.records
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((schema.to_string(), key.to_vec()), value.clone());
     }
 
     /// Read one of a plane's kernel-held durable records.
@@ -223,7 +200,7 @@ impl MemoryStore {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(schema.to_string(), key.to_vec()))
-            .map(|row| row.value.clone())
+            .cloned()
     }
 
     /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
@@ -251,13 +228,17 @@ impl MemoryStore {
         prefix: &[u8],
         limit: u32,
     ) -> Vec<(Vec<u8>, RecordBytes)> {
+        // A SEEK to the first key at or after `(schema, prefix)`, stopping at the first key past
+        // the prefix: the map is in key order, so every row of the schema under the prefix is in
+        // that one run, and no other schema's rows are walked.
+        let from = (schema.to_string(), prefix.to_vec());
         self.records
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
+            .range(from..)
+            .take_while(|((s, k), _)| s == schema && k.starts_with(prefix))
             .take(limit as usize)
-            .map(|((_, k), row)| (k.clone(), row.value.clone()))
+            .map(|((_, k), value)| (k.clone(), value.clone()))
             .collect()
     }
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
@@ -485,6 +466,16 @@ impl Store for MemoryStore {
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
+        // The money slots' windows first (the v3 lock is always taken before a map lock), then the
+        // token ledger's.
+        let slots = self.v3.purge_windows_before(before, self.now());
+        let mut usage = self.usage();
+        let held = usage.len();
+        usage.retain(|(_, window_start), _| *window_start >= before);
+        Ok(slots + (held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -888,13 +879,33 @@ impl Store for MemoryStore {
         // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
         // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
         // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
+        // PUT-IF-ABSENT: a live row answers `false` and is left as it is, so a losing claim never
+        // moves the winner's expiry. A lapsed row is vacant to its own key: its token can never be
+        // presented again, so the claim is a new one.
         let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
-        // Lapsed rows go in the same call: a token past its own expiry can never be presented
-        // again, so retaining it only grows the map.
-        spent.retain(|_, exp| *exp > now);
-        let first = spent
-            .insert((kind.to_string(), token.to_string()), expires_at)
-            .is_none();
+        let first = match spent.entry((kind.to_string(), token.to_string())) {
+            std::collections::hash_map::Entry::Occupied(mut row) => {
+                let lapsed = *row.get() <= now;
+                if lapsed {
+                    row.insert(expires_at);
+                }
+                lapsed
+            }
+            std::collections::hash_map::Entry::Vacant(row) => {
+                row.insert(expires_at);
+                true
+            }
+        };
+        // The other lapsed rows go in an amortised sweep, as every other map's do: a redemption
+        // runs once per inbound request that carries a replay key, so it does not walk the map.
+        let sweep_needed = self
+            .tokens_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            spent.retain(|_, exp| *exp > now);
+        }
         Ok(first)
     }
 
@@ -924,8 +935,9 @@ impl Store for MemoryStore {
     }
 }
 
-/// Open this store. It reads no configuration, so every body opens the same fresh RAM store — the
-/// constructor the linked row ([`linked::STORE`]) calls in process.
+/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
+/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
+/// constructor is the Rust-side twin a test drives directly.
 pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
     Ok(Box::new(MemoryStore::new()))
 }
@@ -933,22 +945,34 @@ pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
-/// (the plugin crate's `export_door!`): compiled in or dropped in, the kernel reaches the same table. The memory store
+/// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
 pub use v3::door;
 
-/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
-/// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
-/// `(name, ephemeral, default, open)`: the name `governance.store` selects it by, its statement that
-/// what it holds is lost on restart, its claim to be the governance store a deployment that
-/// configures none runs on, and the open handed the row's configuration (this backend reads none).
-/// The composition root resolves the default from the linked rows' claims; two claims refuse boot.
-pub mod linked {
-    /// An in-process store row's open.
-    pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
+/// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
+/// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
+/// exported symbol is `#[unsafe(no_mangle)]`.
+#[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+pub mod door_export {
+    busbar_contract::export_door!(crate::v3::door);
+}
 
-    /// `(name, ephemeral, default, open)`.
-    pub const STORE: (&str, bool, bool, Open) = ("memory", true, true, super::open);
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
+/// store axis — the same door a dropped-in store exports. `STORE` is `(key, ephemeral, door,
+/// canonical)`: the key `store.module` selects it by (and the store catalog prints), its statement
+/// that what it holds is lost on restart, its store v3 door, which boot opens it through (the store
+/// axis), and its canonical name — the manifest name its release tarball carries (plugins.yaml
+/// `manifest_name`, the repo), which config may name it by too, one plugin whichever door it
+/// arrives by (ARCHITECT C'). It claims no default: a config names its store (Q-STORE = (B)).
+pub mod linked {
+    /// `(key, ephemeral, door, canonical)`.
+    pub const STORE: (
+        &str,
+        bool,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &str,
+    ) = ("memory", true, super::door, "busbar-store-memory");
 }
 
 mod v3;

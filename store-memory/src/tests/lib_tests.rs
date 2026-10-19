@@ -740,9 +740,9 @@ fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused()
 }
 
 /// The spent-token ledger is bounded by the tokens' own expiry: a row past its `expires_at` can
-/// never be presented again, so redeeming anything sweeps the lapsed rows out in the same call.
-/// The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is its own
-/// single-use grant rather than a collision.
+/// never be presented again, so the amortised sweep drops lapsed rows, once every `SWEEP_INTERVAL`
+/// redemptions. The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is
+/// its own single-use grant rather than a collision.
 #[test]
 fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
     let s = MemoryStore::new();
@@ -752,115 +752,158 @@ fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
     // Same nonce, different kind: a separate grant, not the same spent row.
     assert!(s.redeem_plane_token("other", "n1", 100, 50).unwrap());
 
-    // Past its own expiry the row is dropped — nothing upstream can present it again anyway, and
-    // keeping it only grows the map.
-    assert!(s.redeem_plane_token("ask", "n2", 300, 200).unwrap());
+    // Past its own expiry the row is dropped by the sweep — nothing upstream can present it again
+    // anyway, and keeping it only grows the map.
+    for i in 0..SWEEP_INTERVAL {
+        assert!(s
+            .redeem_plane_token("ask", &format!("m{i}"), 300, 200)
+            .unwrap());
+    }
+    assert!(
+        s.plane_tokens
+            .read()
+            .unwrap()
+            .keys()
+            .all(|(_, t)| t != "n1"),
+        "the two lapsed rows must be swept within one sweep interval"
+    );
+}
+
+/// A LOSING REDEMPTION CHANGES NOTHING (`records.claim` is "a one-time put-if-absent with a time to
+/// live", the one path for approval redemption and replay refusal). The loser's own expiry must not
+/// replace the winner's: a shorter one would free the key inside the winner's window, so the same
+/// approval could be redeemed twice; a longer one would keep it blocked past it.
+#[test]
+fn a_losing_redemption_leaves_the_winners_expiry() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 1_000, 0).unwrap());
+    // A replay with a short time to live loses, and must not shorten the winner's claim.
+    assert!(!s.redeem_plane_token("ask", "n1", 10, 0).unwrap());
+    assert!(
+        !s.redeem_plane_token("ask", "n1", 2_000, 500).unwrap(),
+        "the key was won a second time inside the first winner's window"
+    );
+    // A replay with a long time to live loses, and must not extend it.
+    assert!(s.redeem_plane_token("ask", "n3", 100, 0).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n3", 5_000, 50).unwrap());
+    assert!(
+        s.redeem_plane_token("ask", "n3", 6_000, 100).unwrap(),
+        "a lapsed claim stays blocked by a loser's expiry"
+    );
+}
+
+/// A REDEMPTION DOES NOT WALK THE SPENT MAP. The inbound replay check redeems once per request that
+/// carries a replay key, so a redemption that swept every live row under the map's exclusive guard
+/// made each request O(live tokens). A lapsed row is vacant at its own lookup instead, and the sweep
+/// is amortised.
+#[test]
+fn a_redemption_does_not_sweep_the_spent_map() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "a", 100, 0).unwrap());
+    assert!(s.redeem_plane_token("ask", "b", 100, 0).unwrap());
+    assert!(s.redeem_plane_token("ask", "c", 1_000, 200).unwrap());
     assert_eq!(
         s.plane_tokens.read().unwrap().len(),
-        1,
-        "the two lapsed rows must be swept by the redemption that came after them"
+        3,
+        "one redemption swept the whole spent map"
     );
+    // The lapsed row is vacant to its own key.
+    assert!(s.redeem_plane_token("ask", "a", 1_000, 200).unwrap());
+    assert!(!s.redeem_plane_token("ask", "a", 1_000, 300).unwrap());
 }
 
-/// THE `records` MAP IS BOUNDED, LIKE EVERY OTHER MAP IN THIS FILE.
+/// AN ACTIVE WORK HANDLE IS NEVER EVICTED (`BUSBAR-1.6.0.md` THE DESIGN §1, "Admission bounds live
+/// work; nothing evicts it"), and on the record leg nothing tells this backend a row is settled.
 ///
-/// It was the only one that was not. `usage`/`metering` sweep against `MAX_RETENTION_SECS` on a
-/// `SWEEP_INTERVAL` ticker, tombstoned `keys` and revoked `creds` likewise, and `plane_tokens` drops
-/// lapsed rows on every redemption — each with a sweep cell above. The map added for the contract's
-/// record leg had no sweep, no ticker and no TTL, and the contract declares NO delete verb at all
-/// (`busbar_contract::abi::sdk::store::StoreSlots` gives `record_put`/`record_get`/`record_scan`, and this crate
-/// does not implement the stream-keyed `purge_before`), so no caller — internal or external — could
-/// ever prune it. `MemoryStore` is the DEFAULT `db` backend of a long-lived proxy process, so
-/// sustained record-leg traffic under ever-new `(schema, key)` pairs grew it for the life of the
-/// process.
+/// The conformance suite's definition of active is the published path's: a row is settled only when
+/// its [`PlaneDisposition`] sidecar says `Terminal`, and age alone never drops a task
+/// (`tests/store_conformance.rs`, `assert_plane_purge_task_keeps_active_rows`). A record-leg row
+/// has no sidecar — an opaque key, an opaque body — so no row here can be proved settled, and every
+/// row is kept however long ago it was written. This cell used to pin the opposite: a `task` record
+/// written 40 days ago was swept on write age alone after `SWEEP_INTERVAL` unrelated writes.
 ///
-/// The bound is the SAME one the sibling maps use: rows past the 31-day ceiling go, on an amortized
-/// pass every `SWEEP_INTERVAL` writes. It keys on the row's own WRITE time (there is no timestamp
-/// column in a record's key or body — the value is opaque bytes), so a row rewritten by a later
-/// `record_put` is fresh again, which is the correct reading of "still in use".
+/// THE RED ARM, kept in the cell: the SAME store, on the SAME pinned clock and the SAME cadence,
+/// DOES age out a 40-day-old usage window. So the fixture really is past the 31-day ceiling and the
+/// store's age sweep really did come round; the record survives because the record leg is exempt,
+/// not because nothing was old enough or no sweep ran. The pre-fix store fails the first assertion
+/// below (the `task` record read back `None`).
 #[test]
-fn record_put_sweeps_stale_records() {
+fn record_put_never_evicts_a_record_by_age() {
     const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
     let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
 
     let s = MemoryStore::new();
     let n = now();
-    // Written 40 days ago — past the 31-day ceiling.
-    s.pin_clock(n.saturating_sub(40 * 86_400));
-    s.record_put(SCHEMA, b"stale", &body(b"old")).unwrap();
-    // …and one written a day ago, comfortably inside it.
-    s.pin_clock(n.saturating_sub(86_400));
-    s.record_put(SCHEMA, b"fresh", &body(b"recent")).unwrap();
+    let forty_days_ago = n.saturating_sub(40 * 86_400);
+    // An interrupted task, written 40 days ago and never rewritten since: the row that sits still
+    // the longest is exactly the one an age rule would drop.
+    s.pin_clock(forty_days_ago);
+    s.record_put(SCHEMA, b"waiting-on-a-human", &body(b"input-required"))
+        .unwrap();
+    // And one written exactly at the old ceiling, the boundary the age rule used to cut at.
+    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS));
+    s.record_put(SCHEMA, b"at-the-old-ceiling", &body(b"working"))
+        .unwrap();
 
-    s.pin_clock(n); // back to "now" — this governs the sweep's ceiling
-    assert_eq!(
-        s.record_get(SCHEMA, b"stale").unwrap(),
-        Some(body(b"old")),
-        "sanity: nothing has swept yet, the ticker has not come round"
-    );
-
-    // Fire the amortized sweep, exactly as the usage/metering/keys/creds cells do: SWEEP_INTERVAL
-    // writes guarantee the ticker comes round at least once.
-    for i in 0..SWEEP_INTERVAL {
+    // Back to "now", and far more writes than any amortized cadence in this file needs to come
+    // round (twice SWEEP_INTERVAL, so a ticker offset by the two writes above cannot dodge it).
+    s.pin_clock(n);
+    let usage = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![],
+    };
+    for i in 0..2 * SWEEP_INTERVAL {
         s.record_put(SCHEMA, format!("filler-{i}").as_bytes(), &body(b"f"))
             .unwrap();
+        s.add_usage("old-bucket", forty_days_ago, &usage).unwrap();
     }
 
     assert_eq!(
-        s.record_get(SCHEMA, b"stale").unwrap(),
-        None,
-        "a record past the 31-day ceiling must be swept — this map has no delete verb, so the \
-         sweep is its ONLY shrink path"
+        s.record_get(SCHEMA, b"waiting-on-a-human").unwrap(),
+        Some(body(b"input-required")),
+        "a record-leg task written 40 days ago was EVICTED on write age alone — nothing on the record \
+         leg says it is settled, so it is an active work handle and may not be evicted"
     );
     assert_eq!(
-        s.record_get(SCHEMA, b"fresh").unwrap(),
-        Some(body(b"recent")),
-        "the sweep must not over-prune: a row well inside the ceiling survives a pass triggered \
-         by unrelated writes"
+        s.record_get(SCHEMA, b"at-the-old-ceiling").unwrap(),
+        Some(body(b"working")),
+        "a record-leg row at the old 31-day ceiling was evicted by age"
+    );
+    assert_eq!(
+        s.record_scan(SCHEMA, b"", u32::MAX).unwrap().len(),
+        2 + 2 * SWEEP_INTERVAL as usize,
+        "the record leg dropped rows: every record written must still be readable"
+    );
+
+    // THE RED ARM: the store's age sweep is live and the clock is past the ceiling — the 40-day-old
+    // usage window written in the same loop IS gone.
+    assert_eq!(
+        s.get_usage("old-bucket", forty_days_ago).unwrap(),
+        UsageLedger::default(),
+        "the positive control did not fire: a 40-day-old usage window survived the same cadence, so \
+         this cell could not tell a record leg that never evicts from a sweep that never ran"
     );
 }
 
-/// The sweep boundary is EXACT and the same `>` the sibling maps use: a row written exactly
-/// `MAX_RETENTION_SECS` ago sits AT the ceiling and goes; one second fresher stays. And a stale row
-/// REWRITTEN before the pass survives, because `record_put` REPLACES and the freshness rides the
-/// write rather than the key.
+/// A rewrite REPLACES: the record leg answers the newest body for a key, and a scan sees one row
+/// per key, however long ago the key was first written.
 #[test]
-fn record_put_sweep_boundary_is_exact_and_a_rewrite_refreshes_the_row() {
+fn record_put_rewrite_replaces_the_row() {
     const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
     let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
 
     let s = MemoryStore::new();
     let n = now();
-    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS));
-    s.record_put(SCHEMA, b"at-ceiling", &body(b"v")).unwrap();
-    s.record_put(SCHEMA, b"rewritten", &body(b"v1")).unwrap();
-    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS - 1));
-    s.record_put(SCHEMA, b"one-inside", &body(b"v")).unwrap();
-
-    // The rewrite lands at "now", so its row is fresh again even though its first write was not.
+    s.pin_clock(n.saturating_sub(40 * 86_400));
+    s.record_put(SCHEMA, b"t1", &body(b"v1")).unwrap();
     s.pin_clock(n);
-    s.record_put(SCHEMA, b"rewritten", &body(b"v2")).unwrap();
+    s.record_put(SCHEMA, b"t1", &body(b"v2")).unwrap();
 
-    // Three writes are already on the ticker, so SWEEP_INTERVAL more guarantees a pass.
-    for i in 0..SWEEP_INTERVAL {
-        s.record_put(SCHEMA, format!("f-{i}").as_bytes(), &body(b"f"))
-            .unwrap();
-    }
-
+    assert_eq!(s.record_get(SCHEMA, b"t1").unwrap(), Some(body(b"v2")));
     assert_eq!(
-        s.record_get(SCHEMA, b"at-ceiling").unwrap(),
-        None,
-        "written_at + MAX_RETENTION_SECS == now is AT the ceiling and must go (`>`, not `>=`)"
-    );
-    assert_eq!(
-        s.record_get(SCHEMA, b"one-inside").unwrap(),
-        Some(body(b"v")),
-        "one second inside the ceiling must survive"
-    );
-    assert_eq!(
-        s.record_get(SCHEMA, b"rewritten").unwrap(),
-        Some(body(b"v2")),
-        "a rewrite refreshes the row: freshness rides the write, not the key"
+        s.record_scan(SCHEMA, b"t", 10).unwrap(),
+        vec![(b"t1".to_vec(), body(b"v2"))]
     );
 }
 
@@ -984,4 +1027,62 @@ fn append_plane_record_refuses_a_second_writers_fork_at_an_occupied_seq() {
         vec![b"first-writer".to_vec()],
         "the original record must survive the refused fork attempt untouched"
     );
+}
+
+/// Record blobs are opaque to the store (unit-map shapes plus the scale marker are
+/// the KERNEL's encoding): whatever bytes go in come back exactly, by key and by prefix scan.
+/// Moved here from plugin-loader's store money acceptance suite: the record half is this store's own
+/// inherent API, so the store tests it itself.
+#[test]
+fn a_record_blob_comes_back_byte_exact() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("money_acceptance");
+    let blob = br#"{"scale":6,"units":{"input":27500000,"output":1}}"#.to_vec();
+    let s = MemoryStore::new();
+    let body = RecordBytes::new(blob.clone()).expect("inside the record ceiling");
+    s.record_put(SCHEMA, b"cell/k/1", &body).expect("put");
+    let got = s
+        .record_get(SCHEMA, b"cell/k/1")
+        .expect("get")
+        .expect("present");
+    assert_eq!(got.as_slice(), blob.as_slice());
+    let scan = s.record_scan(SCHEMA, b"cell/k/", 10).expect("scan");
+    assert_eq!(scan.len(), 1);
+    assert_eq!(scan[0].1.as_slice(), blob.as_slice());
+}
+
+/// A RECORD SCAN SEEKS ITS OWN SCHEMA AND PREFIX. A plane's `records.list` scans its schema on every
+/// call, beside the node journal's rows under another schema, which grow for the life of the
+/// process. A scan that walked the whole map from its first key cost every call O(all rows of all
+/// schemas) under the map's read guard. Twenty thousand scans of a one-row schema beside 200 000 rows
+/// of another take a few milliseconds with a seek and many seconds with a walk.
+#[test]
+fn a_record_scan_seeks_its_schema_and_prefix() {
+    let s = MemoryStore::new();
+    let body = RecordBytes::new(vec![1]).expect("record");
+    for i in 0u32..200_000 {
+        s.record_put_at("z.other", &i.to_be_bytes(), &body);
+    }
+    s.record_put_at("a.mine", b"k1", &body);
+    s.record_put_at("a.mine", b"x1", &body);
+    let started = std::time::Instant::now();
+    for _ in 0..20_000 {
+        let rows = s.record_scan_at("a.mine", b"k", u32::MAX);
+        assert_eq!(rows.len(), 1);
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "20000 scans of a one-row prefix took {took:?}"
+    );
+    // The seek answers exactly what the walk did, in key order, within the limit.
+    s.record_put_at("a.mine", b"k0", &body);
+    let keys: Vec<Vec<u8>> = s
+        .record_scan_at("a.mine", b"k", 10)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys, vec![b"k0".to_vec(), b"k1".to_vec()]);
+    assert_eq!(s.record_scan_at("a.mine", b"", 2).len(), 2);
+    assert_eq!(s.record_scan_at("a.mine", b"k", 0).len(), 0);
+    assert_eq!(s.record_scan_at("a.min", b"", 10).len(), 0);
 }
