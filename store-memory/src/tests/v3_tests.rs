@@ -99,7 +99,6 @@ fn the_memory_store_states_it_is_ephemeral_and_refuses_forks() {
             ephemeral: true,
             durable_plane: false,
             fork_refusal: true,
-            ..busbar_contract::abi::sdk::store::Tail::ZERO
         }
     );
 }
