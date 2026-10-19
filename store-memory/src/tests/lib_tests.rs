@@ -1099,7 +1099,8 @@ fn a_purge_honours_the_retention_it_is_handed_never_the_kinds_name() {
     active.ts = 5;
     s.upsert_plane_record(active.view()).unwrap();
     assert_eq!(
-        s.purge_plane_records("task", 10, Retention::Age).unwrap(),
+        s.purge_plane_records("task", 10, busbar_contract::records::Retention::Age)
+            .unwrap(),
         1
     );
     assert!(
@@ -1117,8 +1118,12 @@ fn a_purge_honours_the_retention_it_is_handed_never_the_kinds_name() {
         s.upsert_plane_record(r.view()).unwrap();
     }
     assert_eq!(
-        s.purge_plane_records("order", 10, Retention::TerminalOnly)
-            .unwrap(),
+        s.purge_plane_records(
+            "order",
+            10,
+            busbar_contract::records::Retention::TerminalOnly
+        )
+        .unwrap(),
         1
     );
     assert!(s.get_plane_record("order", "o-active").unwrap().is_some());
