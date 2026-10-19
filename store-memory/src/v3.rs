@@ -172,37 +172,58 @@ impl Inner {
     }
 }
 
+impl Inner {
+    /// ROLLING MONEY WINDOWS ARE BOUNDED where they roll: per slot family (bucket, pool, dimension,
+    /// class), every rolling window (`window_start > 0`) older than the one before the family's
+    /// newest is retired, its cap and its counter, unless an open slice still draws on it. Window 0
+    /// never rolls (the gauges and the caps that never reset) and is never retired; the window
+    /// before the newest stays, so a unit drawing across the roll still finds its cap.
+    fn retire_rolled_windows(&mut self) {
+        type Family = (String, Option<String>, u32, String);
+        let family = |s: &Slot| -> Family {
+            (
+                s.bucket.clone(),
+                s.pool.clone(),
+                s.dimension,
+                s.class_key.clone(),
+            )
+        };
+        let mut windows: HashMap<Family, Vec<u64>> = HashMap::new();
+        for slot in self.caps.keys().filter(|s| s.window_start > 0) {
+            windows
+                .entry(family(slot))
+                .or_default()
+                .push(slot.window_start);
+        }
+        // The window before each family's newest: anything older retires.
+        let keep_from: HashMap<Family, u64> = windows
+            .into_iter()
+            .filter_map(|(f, mut w)| {
+                w.sort_unstable();
+                w.dedup();
+                (w.len() > 2).then(|| (f, w[w.len() - 2]))
+            })
+            .collect();
+        if keep_from.is_empty() {
+            return;
+        }
+        let drawn: std::collections::HashSet<Slot> =
+            self.slices.values().map(|d| d.slot.clone()).collect();
+        let retired = |s: &Slot| {
+            s.window_start > 0
+                && !drawn.contains(s)
+                && keep_from
+                    .get(&family(s))
+                    .is_some_and(|&from| s.window_start < from)
+        };
+        self.caps.retain(|s, _| !retired(s));
+        self.used.retain(|s, _| !retired(s));
+    }
+}
+
 impl State {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    /// Purge every money-slot window whose `window_start < before`: its caps, its drawn counters and
-    /// the slices drawn against it. A purged slice is closed at `now`, so a later release of it
-    /// returns `0` as a closed slice's does. Returns how many windows went.
-    pub(crate) fn purge_windows_before(&self, before: u64, now: u64) -> u64 {
-        let mut inner = self.lock();
-        let mut gone: std::collections::HashSet<(String, Option<String>, u64)> =
-            std::collections::HashSet::new();
-        let mut past = |slot: &Slot| {
-            let past = slot.window_start < before;
-            if past {
-                gone.insert((slot.bucket.clone(), slot.pool.clone(), slot.window_start));
-            }
-            !past
-        };
-        inner.caps.retain(|slot, _| past(slot));
-        inner.used.retain(|slot, _| past(slot));
-        let Inner { slices, closed, .. } = &mut *inner;
-        slices.retain(|id, d| {
-            if d.slot.window_start < before {
-                closed.insert(*id, now);
-                false
-            } else {
-                true
-            }
-        });
-        gone.len() as u64
     }
 }
 
@@ -625,6 +646,7 @@ impl MemoryStore {
             }
         }
         inner.caps.extend(pushed);
+        inner.retire_rolled_windows();
         inner.record(self.now(), op, body, Answer::Done);
         Ok(())
     }

@@ -469,13 +469,13 @@ impl Store for MemoryStore {
     }
 
     fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
-        // The money slots' windows first (the v3 lock is always taken before a map lock), then the
-        // token ledger's.
-        let slots = self.v3.purge_windows_before(before, self.now());
+        // THE TOKEN LEDGER'S retention sweep (`RecordStore::purge_windows_before`), and nothing
+        // else: its cutoff is the ledger's, and a money slot's window is keyed in its own unit, with
+        // window 0 never rolling. The money windows are bounded where they roll (`v3_window_caps`).
         let mut usage = self.usage();
         let held = usage.len();
         usage.retain(|(_, window_start), _| *window_start >= before);
-        Ok(slots + (held - usage.len()) as u64)
+        Ok((held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -933,13 +933,6 @@ impl Store for MemoryStore {
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
-}
-
-/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
-/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
-/// constructor is the Rust-side twin a test drives directly.
-pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
-    Ok(Box::new(MemoryStore::new()))
 }
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
