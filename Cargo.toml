@@ -110,6 +110,7 @@ webpki-roots = "1"
 zeroize = "1"
 # busbar .github/fleet/deps.toml [plugin-deps], at 039958a952859a8222b50941b7bc51642b118b12
 fallible-iterator = "0.2"
+httparse = { version = "1", default-features = false }
 ldap3 = { version = "0.12", default-features = false, features = ["sync"] }
 mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
 mysql_common = { version = "0.35", default-features = false }
@@ -119,7 +120,7 @@ percent-encoding = "2"
 postgres = "0.19"
 postgres-protocol = "0.6.11"
 postgres-types = "0.2"
-prost-build = "0.14"
+prost-build = { version = "0.14", default-features = false }
 protoc-bin-vendored = "3"
 redis = { version = "1", default-features = false, features = ["script"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
