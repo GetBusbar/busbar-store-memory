@@ -17,8 +17,8 @@
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -860,6 +860,30 @@ impl Store for MemoryStore {
         Ok((before_len - records.len()) as u64)
     }
 
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        // WHICH rows go is the rule the host hands with the purge, the one the kind's owner declared
+        // (coordinator ruling (b)), never one this store infers from the kind's name: under `Age`
+        // every row of `kind` older than `before`, under `TerminalOnly` only the older TERMINAL
+        // ones (an ACTIVE row is kept however old it is).
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| {
+            let goes = k == kind
+                && r.ts < before
+                && match retention {
+                    Retention::Age => true,
+                    Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
+                };
+            !goes
+        });
+        Ok((before_len - records.len()) as u64)
+    }
+
     fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
         // Absent is a no-op, per the trait. Every `seq` under the identity goes, so deleting a
         // parent's record cannot leave part of a chain behind.
@@ -933,6 +957,14 @@ impl Store for MemoryStore {
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
+}
+
+/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
+/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
+/// constructor is the Rust-side twin a test drives directly: busbar's store money acceptance suite
+/// (`crates/plugin-loader/tests/store_money_acceptance.rs`) opens the build's store through it.
+pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
+    Ok(Box::new(MemoryStore::new()))
 }
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
