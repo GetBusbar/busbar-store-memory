@@ -17,8 +17,8 @@
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -96,7 +96,7 @@ pub struct MemoryStore {
     /// "Admission bounds live work; nothing evicts it"): a real bound on live work is a refusal at
     /// admission, and retention bounds only SETTLED handles. Settledness is a sidecar the store is
     /// handed, never a body it decodes — the published path's [`PlaneDisposition`], which
-    /// `purge_plane_records_before` honours (the conformance suite's
+    /// `purge_plane_records` honours (the conformance suite's
     /// `assert_plane_purge_task_keeps_active_rows`). A record-leg row carries no such sidecar: its
     /// key is opaque bytes and its value an opaque body, so this backend can never know a row is
     /// settled, and a row it cannot prove settled is one it may not drop. Write age is not
@@ -845,18 +845,18 @@ impl Store for MemoryStore {
         Ok(parents)
     }
 
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
-        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
-        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
-        // work), every other kind drops any row older than `before`.
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> StoreResult<u64> {
+        // WHICH rows go is the rule the host passes: `TerminalOnly` (the `task` kind's) drops only
+        // TERMINAL rows (an interrupted task waiting on a human is exactly the row that sits still
+        // longest, and dropping it loses the work), `Age` drops any row older than `before`.
         let mut records = self.plane_records();
         let before_len = records.len();
-        records.retain(|(k, _, _), r| {
-            if k != kind || r.ts >= before {
-                return true;
-            }
-            k == "task" && r.disposition != PlaneDisposition::Terminal
-        });
+        records.retain(|(k, _, _), r| k != kind || !retention.drops(r.ts, before, r.disposition));
         Ok((before_len - records.len()) as u64)
     }
 
