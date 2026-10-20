@@ -959,6 +959,14 @@ impl Store for MemoryStore {
     }
 }
 
+/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
+/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
+/// constructor is the Rust-side twin a test drives directly: busbar's store money acceptance suite
+/// (`crates/plugin-loader/tests/store_money_acceptance.rs`) opens the build's store through it.
+pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
+    Ok(Box::new(MemoryStore::new()))
+}
+
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
