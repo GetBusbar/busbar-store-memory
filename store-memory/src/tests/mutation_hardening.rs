@@ -5,9 +5,10 @@
 //! stand apart from ordinary behavior coverage, regardless of how any given hardening pass scores
 //! the rest of the crate.
 //!
-//! Its own `src/tests/` module (rather than a case added to `src/tests/lib_tests.rs`), beside this
-//! crate's `src/tests/store_conformance.rs`: a cross-cutting store contract check does not belong
-//! inside the store's unit-test module.
+//! Its own top-level `tests/` file (rather than a case added to `src/tests/lib_tests.rs`), matching
+//! this crate's existing `tests/store_conformance.rs` — a cross-cutting store contract check does
+//! not belong inside the src-level unit-test file, per the repo's test-locality convention
+//! (`docs/code-layout.md`).
 
 use crate::MemoryStore;
 use busbar_contract::records::{

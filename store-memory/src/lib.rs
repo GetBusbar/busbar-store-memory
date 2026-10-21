@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The in-memory (RAM) store: the backend an operator selects with `store: {module: memory}`. 1.6.0
-//! has no default store: `store:` is required, for this backend as for any other, and boot refuses
-//! without it. No setup and no dependencies beyond the `busbar-contract` records contract.
-//! EPHEMERAL: every counter, key, and credential is lost on restart; configure a durable backend
-//! (e.g. `store-sqlite`/`store-postgres`) for persistence. Poison-recovering locks (the governance
-//! surface must never panic on a request).
+//! The DEFAULT `db` backend: an in-memory (RAM) store. Zero setup, no dependencies beyond the
+//! `busbar-contract` records contract — governance works out of the box. EPHEMERAL: every counter, key, and
+//! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
+//! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
 //! ONE DOOR, COMPILED IN OR DROPPED IN (#2, THE DESIGN §2): [`door`] is what a build that links
 //! this crate registers and what the dropped-in `cdylib` exports (feature `dropped-in`, the
@@ -53,14 +51,14 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
-type MeteringKey = (String, u64, String, String, u64);
-
 /// In-memory `Store`: keys by id, row-looked-up credentials by id (`(kind, public_id)` lookup and
 /// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
 /// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
 /// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
 /// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
+type MeteringKey = (String, u64, String, String, u64);
+
 #[derive(Default)]
 struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
@@ -84,10 +82,10 @@ struct MemoryStore {
     /// `(schema, key)`.
     ///
     /// A SECOND map beside `plane_records` and deliberately not a re-keying of it. The eight
-    /// kind-tagged plane-record verbs above are 1.6.0's PUBLISHED store surface (new in 1.6.0: the
-    /// 1.5.5 store trait has none), whose key shape the record leg must not disturb. These three are
-    /// what `busbar_contract::abi::sdk::store::StoreSlots` declares for a record leg, and they key
-    /// on an opaque byte string rather than on the `(kind, id, seq)` columns. Folding them onto one map would make every record leg a change to the published
+    /// kind-tagged verbs above are the PUBLISHED store protocol the previous release's callers still
+    /// drive, byte for byte; these three are what `busbar_contract::abi::sdk::store::StoreSlots` declares for a
+    /// record leg, and they key on an opaque byte string rather than on the `(kind, id, seq)`
+    /// columns. Folding them onto one map would make every record leg a change to the published
     /// path's key shape, which is precisely the thing that has to stay identical.
     ///
     /// A `BTreeMap` because `record_scan` walks a PREFIX and answers in key order: a hash map would
@@ -98,8 +96,8 @@ struct MemoryStore {
     /// "Admission bounds live work; nothing evicts it"): a real bound on live work is a refusal at
     /// admission, and retention bounds only SETTLED handles. Settledness is a sidecar the store is
     /// handed, never a body it decodes — the published path's [`PlaneDisposition`], which
-    /// `purge_plane_records` honours under the retention rule the kind declares (the conformance
-    /// suite's `assert_plane_purge_terminal_only_keeps_active_rows`). A record-leg row carries no such sidecar: its
+    /// `purge_plane_records_before` honours (the conformance suite's
+    /// `assert_plane_purge_task_keeps_active_rows`). A record-leg row carries no such sidecar: its
     /// key is opaque bytes and its value an opaque body, so this backend can never know a row is
     /// settled, and a row it cannot prove settled is one it may not drop. Write age is not
     /// settledness: an interrupted task waiting on a human is exactly the row nothing rewrites for
@@ -793,10 +791,18 @@ impl Store for MemoryStore {
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
-        // The AGE rule, for every kind alike: no store infers a kind's retention from its name. A
-        // kind whose owner declared terminal-only retention is purged through
-        // `purge_plane_records` with that rule, which the host hands with the purge.
-        Store::purge_plane_records(self, kind, before, Retention::Age)
+        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
+        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
+        // work), every other kind drops any row older than `before`.
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| {
+            if k != kind || r.ts >= before {
+                return true;
+            }
+            k == "task" && r.disposition != PlaneDisposition::Terminal
+        });
+        Ok((before_len - records.len()) as u64)
     }
 
     fn purge_plane_records(
@@ -806,12 +812,20 @@ impl Store for MemoryStore {
         retention: Retention,
     ) -> StoreResult<u64> {
         // WHICH rows go is the rule the host hands with the purge, the one the kind's owner declared
-        // (the plane's `RecordRetention`), never one this store infers from the kind's name: under
-        // `Age` every row of `kind` older than `before`, under `TerminalOnly` only the older
-        // TERMINAL ones (an ACTIVE row is kept however old it is).
+        // (coordinator ruling (b)), never one this store infers from the kind's name: under `Age`
+        // every row of `kind` older than `before`, under `TerminalOnly` only the older TERMINAL
+        // ones (an ACTIVE row is kept however old it is).
         let mut records = self.plane_records();
         let before_len = records.len();
-        records.retain(|(k, _, _), r| !(k == kind && retention.drops(r.ts, before, r.disposition)));
+        records.retain(|(k, _, _), r| {
+            let goes = k == kind
+                && r.ts < before
+                && match retention {
+                    Retention::Age => true,
+                    Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
+                };
+            !goes
+        });
         Ok((before_len - records.len()) as u64)
     }
 
@@ -830,10 +844,10 @@ impl Store for MemoryStore {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool> {
-        // TEST-AND-SET under ONE guard. The trait's default is `Ok(false)`, fail-closed: a store
-        // that keeps no ledger cannot attest a first redemption, so it refuses every one. This store
-        // keeps the ledger, so it overrides the default to grant the FIRST redemption of a token and
-        // refuse every replay of it: a confirm-once tool executes once.
+        // TEST-AND-SET under ONE guard. The trait's default is `Ok(true)` — "this store keeps no
+        // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
+        // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
+        // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
         // PUT-IF-ABSENT: a live row answers `false` and is left as it is, so a losing claim never
         // moves the winner's expiry. A lapsed row is vacant to its own key: its token can never be
         // presented again, so the claim is a new one.

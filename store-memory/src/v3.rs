@@ -19,19 +19,13 @@
 //! stale one (the `epoch` a caller states is accepted as given) and grants slices that never expire
 //! (`valid_until_ms = u64::MAX`): no other node can draw against its windows. A store a fleet shares
 //! persists and fences the epoch and bounds every slice. A release, here as everywhere, returns at
-//! most what the slice has left, and a slice with nothing left returns `0`. A release CLOSES the
-//! slice: its unit hands back what it did not spend, once, and spent the rest, so nothing is left
-//! to return. A slice that never expires must close on its release, or a unit that spent part of
-//! its grant would keep it open, and pin its window's cap and counter, for the life of the process.
-//!
-//! CLOSED SLICES are kept as long as an `op_id` is ([`OP_ID_RETENTION_SECS`]), indexed by when they
-//! closed, so each release forgets the expired ones from the front of that index and never walks
-//! the rest.
+//! most what the slice has left, and a slice with nothing left returns `0`. A release with nothing
+//! unspent closes the slice: its unit spent the rest, so nothing is left.
 //!
 //! GRANT SIZE: a cell grants its whole `amount` or the reserve fails; the per-dimension test
 //! is 1.5.5's, cited on `abi::store::ReserveIn`.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
@@ -145,15 +139,9 @@ struct Inner {
     /// `slot -> drawn and not released`.
     used: HashMap<Slot, u64>,
     slices: HashMap<u64, Drawn>,
-    /// The released slices, with when they closed: another release of one returns `0`. Kept as long
-    /// as an `op_id` is (`OP_ID_RETENTION_SECS`), then forgotten, at every size.
+    /// The slices whose unreturned unspent reached `0`, with when: a later release of one returns
+    /// `0`. Kept as long as an `op_id` is (`OP_ID_RETENTION_SECS`), then forgotten.
     closed: HashMap<u64, u64>,
-    /// `(closed_at, slice_id)` for every entry of `closed`, in close-time order: the retention
-    /// sweep pops expired entries from its front, so a release touches only what it forgets.
-    closed_aged: BTreeSet<(u64, u64)>,
-    /// Test-only: how many `closed_aged` entries the retention sweep has examined.
-    #[cfg(test)]
-    closed_touched: u64,
     next_slice: u64,
     /// `stream -> its head's seq`, the count of records appended to it. `heads` is the one read of a
     /// stream, so its records are not kept.
@@ -195,30 +183,6 @@ impl Inner {
         }
         self.ops.insert(op, Recorded { body, answer });
         self.aged.push_back((now, op));
-    }
-
-    /// Close a released slice at `now`.
-    fn close(&mut self, id: u64, now: u64) {
-        if self.slices.remove(&id).is_some() {
-            self.closed.insert(id, now);
-            self.closed_aged.insert((now, id));
-        }
-    }
-
-    /// Forget every closed slice past its retention, from the front of the close-time index: the
-    /// work is the entries forgotten plus the one that stops the walk.
-    fn forget_closed(&mut self, now: u64) {
-        while let Some(&(at, id)) = self.closed_aged.first() {
-            #[cfg(test)]
-            {
-                self.closed_touched += 1;
-            }
-            if at.saturating_add(OP_ID_RETENTION_SECS) > now {
-                break;
-            }
-            self.closed_aged.pop_first();
-            self.closed.remove(&id);
-        }
     }
 }
 
@@ -281,28 +245,14 @@ impl State {
 #[cfg(test)]
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Held {
-    /// The bytes the dedupe log keeps per remembered op, summed: the digest and the answer.
+    /// The bytes the dedupe log keeps per remembered op, summed.
     pub(crate) op_bytes: usize,
-    /// The bytes the ledger streams keep, summed: each stream's name and head.
+    /// The record bytes the ledger streams keep, summed.
     pub(crate) journal_bytes: usize,
-    /// How many caps, slot counters, open slices and closed slices are kept.
+    /// How many caps, slot counters and open slices are kept.
     pub(crate) caps: usize,
     pub(crate) used: usize,
     pub(crate) slices: usize,
-    pub(crate) closed: usize,
-}
-
-#[cfg(test)]
-impl Answer {
-    /// The bytes this answer keeps.
-    fn held_bytes(&self) -> usize {
-        match self {
-            Answer::Done => 0,
-            Answer::Head(_) => std::mem::size_of::<Head>(),
-            Answer::Grants(g) => std::mem::size_of_val(g.as_slice()),
-            Answer::Released(r) => std::mem::size_of_val(r.as_slice()),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -311,28 +261,13 @@ impl State {
     pub(crate) fn held(&self) -> Held {
         let inner = self.lock();
         Held {
-            op_bytes: inner
-                .ops
-                .values()
-                .map(|r| r.body.len() + r.answer.held_bytes())
-                .sum(),
-            journal_bytes: inner
-                .journals
-                .iter()
-                .map(|(stream, seq)| stream.len() + std::mem::size_of_val(seq))
-                .sum(),
+            op_bytes: inner.ops.values().map(|r| r.body.len()).sum(),
+            // A stream keeps its count alone.
+            journal_bytes: 0,
             caps: inner.caps.len(),
             used: inner.used.len(),
             slices: inner.slices.len(),
-            closed: inner.closed.len(),
         }
-    }
-
-    /// Test-only: how many closed-slice index entries the retention sweep has examined, read and
-    /// reset.
-    pub(crate) fn take_closed_touched(&self) -> u64 {
-        let mut inner = self.lock();
-        std::mem::take(&mut inner.closed_touched)
     }
 }
 
@@ -618,7 +553,11 @@ impl MemoryStore {
         let body = body(format_args!("slice_release:{epoch}:{items:?}"));
         let now = self.now();
         let answer = self.deduped(op, body, |_, inner| {
-            inner.forget_closed(now);
+            if inner.closed.len() > 1024 {
+                inner
+                    .closed
+                    .retain(|_, at| at.saturating_add(OP_ID_RETENTION_SECS) > now);
+            }
             let known = |id: &u64| inner.slices.contains_key(id) || inner.closed.contains_key(id);
             if let Some((id, _)) = items.iter().find(|(id, _)| !known(id)) {
                 return Err(OpRefused::Failed(format!(
@@ -627,18 +566,21 @@ impl MemoryStore {
             }
             let mut back_all = Vec::with_capacity(items.len());
             for &(id, unspent) in &items {
-                // A slice closed by an earlier release (or an earlier item of this call) returns
-                // nothing more.
-                let Some(d) = inner.slices.get(&id) else {
+                // A slice closed once its unreturned unspent reached 0 (by an earlier release, or an
+                // earlier item of this call) returns nothing more.
+                let Some(d) = inner.slices.get_mut(&id) else {
                     back_all.push(0);
                     continue;
                 };
                 let back = unspent.min(d.left);
+                d.left -= back;
                 let slot = d.slot.clone();
-                // The release closes the slice: its unit returns what it did not spend and spent
-                // the rest, so nothing is left. The spent part stays drawn on its window, and the
-                // window is no longer pinned by an open slice.
-                inner.close(id, now);
+                // Nothing left to return, or nothing unspent to return it from: the slice closes
+                // (its unit spent the rest; "it closes when nothing is left").
+                if d.left == 0 || unspent == 0 {
+                    inner.slices.remove(&id);
+                    inner.closed.insert(id, now);
+                }
                 if let Some(u) = inner.used.get_mut(&slot) {
                     *u = u.saturating_sub(back);
                 }

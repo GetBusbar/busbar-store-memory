@@ -76,7 +76,7 @@ mod conf {
 
     use busbar_contract::records::{
         AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord,
-        PlaneSelector, RecordStore as Store, Retention, SecretForm, VirtualKey,
+        PlaneSelector, RecordStore as Store, SecretForm, VirtualKey,
     };
     use serde::{Deserialize, Serialize};
     use std::collections::hash_map::DefaultHasher;
@@ -423,8 +423,8 @@ mod conf {
     // those fields, and a backend that stores the body verbatim and one that decodes/re-encodes it both
     // conform.
     //
-    // SKIP on a backend that provides no durable plane state (the trait's defaulted keep-nothing). This
-    // RAM store keeps plane state and runs every check below. Namespacing follows the module doc: derive fixtures from `ns` and reset the plane tables
+    // SKIP on a backend that provides no durable plane state (the defaulted keep-nothing — e.g. the RAM
+    // default). Namespacing follows the module doc: derive fixtures from `ns` and reset the plane tables
     // for that `ns` before calling on a shared-database backend.
 
     /// A stand-in for the `task`-kind body: the field NAMES a backend decodes by, nothing more. Local to
@@ -808,15 +808,14 @@ mod conf {
         );
     }
 
-    /// **`purge_plane_records` under [`Retention::TerminalOnly`] drops only TERMINAL rows.** The rule is
-    /// the one the kind's owner declares and the host hands with the purge, never one the store infers
-    /// from the kind's name: for the task table, an interrupted task waiting on a human is exactly the
-    /// row that sits still longest, and dropping it loses the work. Terminality is the envelope's
+    /// **`purge_plane_records_before` (kind `task`) drops only TERMINAL rows.** Age alone is not the
+    /// task table's retention rule: an interrupted task waiting on a human is exactly the row that sits
+    /// still longest, and dropping it loses the work. Terminality is the envelope's
     /// [`PlaneDisposition`] sidecar — a backend never has to decode the opaque body to honour this.
     ///
     /// The cutoff still applies on top: a TERMINAL row newer than `before` stays. So the three rows
     /// below separate the two axes, and a backend that honours only one of them fails.
-    pub fn assert_plane_purge_terminal_only_keeps_active_rows(store: &dyn Store, ns: &str) {
+    pub fn assert_plane_purge_task_keeps_active_rows(store: &dyn Store, ns: &str) {
         // See `ns_purge_window`: `cutoff` is fixed and shared by every run; only `old_ts`/`fresh_ts` are
         // salted per `ns`, each confined to its own side of `cutoff`, well under the ~1_700_000_000
         // epoch-second fixtures other helpers in this module use for the same `task` kind.
@@ -843,7 +842,7 @@ mod conf {
         // executes second can correctly see `0` for its own call, without either backend being
         // non-conforming. What holds under any interleaving is the namespace-scoped evidence below.
         let _purged = store
-            .purge_plane_records("task", cutoff, Retention::TerminalOnly)
+            .purge_plane_records_before("task", cutoff)
             .expect("purge the task plane records older than the cutoff");
 
         let ids: Vec<String> = store
@@ -957,7 +956,7 @@ fn plane_purge_honours_the_cutoff() {
 
 #[test]
 fn plane_purge_task_keeps_active_rows() {
-    conf::assert_plane_purge_terminal_only_keeps_active_rows(&MemoryStore::new(), "conf");
+    conf::assert_plane_purge_task_keeps_active_rows(&MemoryStore::new(), "conf");
 }
 
 #[test]
@@ -988,10 +987,8 @@ fn plane_purge_honours_the_cutoff_survives_two_interleaved_runs() {
 fn plane_purge_task_keeps_active_rows_survives_two_interleaved_runs() {
     let store = MemoryStore::new();
     std::thread::scope(|scope| {
-        let a = scope
-            .spawn(|| conf::assert_plane_purge_terminal_only_keeps_active_rows(&store, "confA"));
-        let b = scope
-            .spawn(|| conf::assert_plane_purge_terminal_only_keeps_active_rows(&store, "confB"));
+        let a = scope.spawn(|| conf::assert_plane_purge_task_keeps_active_rows(&store, "confA"));
+        let b = scope.spawn(|| conf::assert_plane_purge_task_keeps_active_rows(&store, "confB"));
         a.join().expect("run confA must not panic");
         b.join().expect("run confB must not panic");
     });

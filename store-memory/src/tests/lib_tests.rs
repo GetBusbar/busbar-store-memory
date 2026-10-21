@@ -586,8 +586,9 @@ fn put_credential_sweeps_stale_revoked_creds() {
     s.put_key(&key("k-old")).unwrap();
     s.put_credential(&credential("old-revoked", "k-old", "AKIA_OLD"))
         .unwrap();
-    // Revoke it far in the past: `revoke_credential` stamps `revoked_at` from the pinned clock
-    // (`self.now()`), so pin the clock first and the stamp lands well past the retention ceiling.
+    // Revoke it far in the past (pin the clock at revoke time so `revoked_at` lands well past
+    // the retention ceiling) — `revoke_credential` stamps `revoked_at` from the real wall clock,
+    // not the pinned one, so pin first, revoke, then verify the stamped value directly.
     s.pin_clock(old_revoked_at);
     s.revoke_credential("old-revoked", "rotated").unwrap();
 
@@ -816,7 +817,7 @@ fn a_redemption_does_not_sweep_the_spent_map() {
 ///
 /// The conformance suite's definition of active is the published path's: a row is settled only when
 /// its [`PlaneDisposition`] sidecar says `Terminal`, and age alone never drops a task
-/// (`src/tests/store_conformance.rs`, `assert_plane_purge_terminal_only_keeps_active_rows`). A record-leg row
+/// (`tests/store_conformance.rs`, `assert_plane_purge_task_keeps_active_rows`). A record-leg row
 /// has no sidecar — an opaque key, an opaque body — so no row here can be proved settled, and every
 /// row is kept however long ago it was written. This cell used to pin the opposite: a `task` record
 /// written 40 days ago was swept on write age alone after `SWEEP_INTERVAL` unrelated writes.
@@ -955,7 +956,7 @@ fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
 }
 
 /// `plane_token_live` is the MULTI-use, time-and-disposition-bounded capability check, NOT the
-/// single-use `redeem_plane_token` test-and-set. On the in-memory backend it answers `true`
+/// single-use `redeem_plane_token` test-and-set. On the default in-memory backend it answers `true`
 /// while a matching `(kind, token)` record is present, still `Active`, and unexpired — and it must be
 /// REPEATABLE, spending nothing, because the A2A push-callback verify-live leg calls back several
 /// times against one long-running task. The trait default returns `Ok(false)`, which would refuse
@@ -1117,27 +1118,6 @@ fn a_record_scan_seeks_its_schema_and_prefix() {
     assert_eq!(s.record_scan_at("a.mine", b"", 2).len(), 2);
     assert_eq!(s.record_scan_at("a.mine", b"k", 0).len(), 0);
     assert_eq!(s.record_scan_at("a.min", b"", 10).len(), 0);
-}
-
-/// THE AGE PURGE NEVER READS THE KIND'S NAME: `purge_plane_records_before` is the age rule for every
-/// kind alike, `task` included; a kind declared terminal-only is purged through
-/// `purge_plane_records` with the rule the host hands. RED before the fix: the store kept an old
-/// ACTIVE `task` row under the age purge because the kind was named `task`, and dropped the same
-/// row of any other kind.
-#[test]
-fn the_age_purge_treats_every_kind_alike() {
-    let s = MemoryStore::new();
-    for kind in ["task", "order"] {
-        let mut r = plane_task("old-active", PlaneDisposition::Active);
-        r.kind = kind.to_string();
-        r.ts = 5;
-        s.upsert_plane_record(r.view()).unwrap();
-        assert_eq!(s.purge_plane_records_before(kind, 10).unwrap(), 1, "{kind}");
-        assert!(
-            s.get_plane_record(kind, "old-active").unwrap().is_none(),
-            "the age purge kept an old active `{kind}` row"
-        );
-    }
 }
 
 /// THE PURGE HONOURS THE RETENTION RULE IT IS HANDED (coordinator ruling (b)), never one inferred
