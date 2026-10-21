@@ -105,10 +105,12 @@ struct MemoryStore {
     /// the longest, and a one-time claim (`records.claim`) dropped by age is a claim that can be
     /// made twice.
     ///
-    /// Nor is there a delete verb: `busbar_contract::abi::sdk::store::StoreSlots` declares
-    /// `record_put`/`record_get`/`record_scan` and nothing that removes a row, so a backend cannot
-    /// invent one here. The map's bound is the kernel's admission and its own settled-handle sweep,
-    /// not this backend's clock; and the backend is EPHEMERAL, so a restart empties it.
+    /// What removes a row is the host, never this backend's clock: a `record_put` whose value is
+    /// EMPTY removes the `(schema, key)` row (slot 40's rule, ARCHITECT 2026-10-21), so
+    /// `record_get` answers `None` and `record_scan` never returns it. The host writes every strike
+    /// that way (a swept work handle, a dropped chain), so the map's bound is the kernel's
+    /// admission and its own settled-handle sweep; and the backend is EPHEMERAL, so a restart
+    /// empties it.
     records: RwLock<RecordMap>,
     /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
     /// RAM — but append-only and fork-detecting within the process's life, which is what the
@@ -146,11 +148,14 @@ impl MemoryStore {
     pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
         // No age sweep rides this write: a record-leg row is never evicted by age (see the
         // `records` field's doc), because nothing here can tell an active work handle from a
-        // settled one.
-        self.records
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((schema.to_string(), key.to_vec()), value.clone());
+        // settled one. An EMPTY value is the host's strike: it removes the row.
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
+        let at = (schema.to_string(), key.to_vec());
+        if value.as_slice().is_empty() {
+            records.remove(&at);
+        } else {
+            records.insert(at, value.clone());
+        }
     }
 
     /// `Self::record_get` under a schema named at run time.
@@ -889,7 +894,7 @@ impl Store for MemoryStore {
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
 /// (the `door_export` module): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
-pub use v3::door;
+pub use v3::{door, MACRO_DOOR};
 
 /// THE DROPPED-IN DOOR (feature `dropped-in`): `door` exported as the image's ONE symbol through
 /// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
