@@ -19,10 +19,16 @@
 //! stale one (the `epoch` a caller states is accepted as given) and grants slices that never expire
 //! (`valid_until_ms = u64::MAX`): no other node can draw against its windows. A store a fleet shares
 //! persists and fences the epoch and bounds every slice. A release, here as everywhere, returns at
-//! most what the slice has left, and a slice with nothing left returns `0`. A release CLOSES the
-//! slice: its unit hands back what it did not spend, once, and spent the rest, so nothing is left
-//! to return. A slice that never expires must close on its release, or a unit that spent part of
-//! its grant would keep it open, and pin its window's cap and counter, for the life of the process.
+//! most what the slice has left, and a slice with nothing left returns `0`. A partial release
+//! leaves the slice open for the rest; it closes when nothing is left, and a release with nothing
+//! unspent closes it too (its unit spent the rest). `abi::store::money`'s slice-life rule (c)/(d).
+//!
+//! WHERE A SLICE'S VALIDITY ENDS: a single-node slice has no expiry, so its validity ends with its
+//! WINDOW. When a rolling window closes (a cap pushed for a newer window retires it, see
+//! `retire_rolled_windows`), every slice still open on it closes as an expired slice does under
+//! rule (c): what is still unreturned goes back to the window's headroom, the spent part stays
+//! counted, and the window's cap and counter retire with it. So a partly spent slice is usable
+//! until its window closes and never pins that window for the life of the process.
 //!
 //! CLOSED SLICES are kept as long as an `op_id` is ([`OP_ID_RETENTION_SECS`]), indexed by when they
 //! closed, so each release forgets the expired ones from the front of that index and never walks
@@ -145,7 +151,7 @@ struct Inner {
     /// `slot -> drawn and not released`.
     used: HashMap<Slot, u64>,
     slices: HashMap<u64, Drawn>,
-    /// The released slices, with when they closed: another release of one returns `0`. Kept as long
+    /// The closed slices, with when they closed: another release of one returns `0`. Kept as long
     /// as an `op_id` is (`OP_ID_RETENTION_SECS`), then forgotten, at every size.
     closed: HashMap<u64, u64>,
     /// `(closed_at, slice_id)` for every entry of `closed`, in close-time order: the retention
@@ -197,7 +203,7 @@ impl Inner {
         self.aged.push_back((now, op));
     }
 
-    /// Close a released slice at `now`.
+    /// Close a slice at `now` (its release, or its window's close).
     fn close(&mut self, id: u64, now: u64) {
         if self.slices.remove(&id).is_some() {
             self.closed.insert(id, now);
@@ -225,10 +231,11 @@ impl Inner {
 impl Inner {
     /// ROLLING MONEY WINDOWS ARE BOUNDED where they roll: per slot family (bucket, pool, dimension,
     /// class), every rolling window (`window_start > 0`) older than the one before the family's
-    /// newest is retired, its cap and its counter, unless an open slice still draws on it. Window 0
+    /// newest CLOSES: every slice still open on it ends (its validity ends with its window, the
+    /// module doc's slice-life rule) and the window's cap and counter are retired. Window 0
     /// never rolls (the gauges and the caps that never reset) and is never retired; the window
     /// before the newest stays, so a unit drawing across the roll still finds its cap.
-    fn retire_rolled_windows(&mut self) {
+    fn retire_rolled_windows(&mut self, now: u64) {
         type Family = (String, Option<String>, u32, String);
         let family = |s: &Slot| -> Family {
             (
@@ -257,15 +264,29 @@ impl Inner {
         if keep_from.is_empty() {
             return;
         }
-        let drawn: std::collections::HashSet<Slot> =
-            self.slices.values().map(|d| d.slot.clone()).collect();
         let retired = |s: &Slot| {
             s.window_start > 0
-                && !drawn.contains(s)
                 && keep_from
                     .get(&family(s))
                     .is_some_and(|&from| s.window_start < from)
         };
+        // The slices still open on a closing window end with it: what is unreturned goes back to
+        // the window's headroom (rule (c)'s expiry), then the window's cap and counter retire.
+        let ending: Vec<u64> = self
+            .slices
+            .iter()
+            .filter(|(_, d)| retired(&d.slot))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ending {
+            if let Some(d) = self.slices.get(&id) {
+                let (slot, left) = (d.slot.clone(), d.left);
+                if let Some(u) = self.used.get_mut(&slot) {
+                    *u = u.saturating_sub(left);
+                }
+            }
+            self.close(id, now);
+        }
         self.caps.retain(|s, _| !retired(s));
         self.used.retain(|s, _| !retired(s));
     }
@@ -627,18 +648,21 @@ impl MemoryStore {
             }
             let mut back_all = Vec::with_capacity(items.len());
             for &(id, unspent) in &items {
-                // A slice closed by an earlier release (or an earlier item of this call) returns
-                // nothing more.
-                let Some(d) = inner.slices.get(&id) else {
+                // A closed slice (by an earlier release, an earlier item of this call, or its
+                // window's close) returns nothing more.
+                let Some(d) = inner.slices.get_mut(&id) else {
                     back_all.push(0);
                     continue;
                 };
                 let back = unspent.min(d.left);
+                d.left -= back;
                 let slot = d.slot.clone();
-                // The release closes the slice: its unit returns what it did not spend and spent
-                // the rest, so nothing is left. The spent part stays drawn on its window, and the
-                // window is no longer pinned by an open slice.
-                inner.close(id, now);
+                // Nothing left to return, or nothing unspent to return it from: the slice closes
+                // (its unit spent the rest; "it closes when nothing is left"). A partial release
+                // leaves it open for the rest, until its window closes.
+                if d.left == 0 || unspent == 0 {
+                    inner.close(id, now);
+                }
                 if let Some(u) = inner.used.get_mut(&slot) {
                     *u = u.saturating_sub(back);
                 }
@@ -718,8 +742,9 @@ impl MemoryStore {
             }
         }
         inner.caps.extend(pushed);
-        inner.retire_rolled_windows();
-        inner.record(self.now(), op, body, Answer::Done);
+        let now = self.now();
+        inner.retire_rolled_windows(now);
+        inner.record(now, op, body, Answer::Done);
         Ok(())
     }
 }
