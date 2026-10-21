@@ -43,7 +43,21 @@ use busbar_contract::records::{
 
 use crate::MemoryStore;
 
-busbar_contract::store_door!(MemoryStore, "memory", env!("CARGO_PKG_VERSION"), 1024);
+busbar_contract::statement_extensions!(
+    /// The Statement's extensions: this plugin's whole `declares` document (BUSBAR-1.6.0.md l.246).
+    EXTENSIONS: [(
+        busbar_contract::abi::mechanism::extensions::EXT_DECLARES,
+        include_bytes!("../declares.json"),
+    )]
+);
+
+busbar_contract::store_door!(
+    MemoryStore,
+    "memory",
+    env!("CARGO_PKG_VERSION"),
+    1024,
+    extensions: EXTENSIONS
+);
 
 /// A slot key owned by the store: `(bucket, pool, dimension, class_key, window_start)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

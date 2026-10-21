@@ -7,8 +7,8 @@
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
 //! ONE DOOR, COMPILED IN OR DROPPED IN (#2, THE DESIGN §2): [`door`] is what a build that links
-//! this crate registers ([`linked::STORE`]) and what the dropped-in `cdylib` exports (feature
-//! `dropped-in`, the `door_export` module). Unsafe code is denied crate-wide; the one exception is
+//! this crate registers and what the dropped-in `cdylib` exports (feature `dropped-in`, the
+//! `door_export` module); it is this crate's only public item (BUSBAR-1.6.0.md l.3567). Unsafe code is denied crate-wide; the one exception is
 //! the door module the contract's export macro generates, whose C-ABI symbols cannot be written
 //! without it.
 
@@ -23,8 +23,7 @@ use busbar_contract::records::{
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
 // each carry one and this crate answers both.
-use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
+use busbar_contract::kinds::RecordBytes;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -60,7 +59,7 @@ fn now() -> u64 {
 type MeteringKey = (String, u64, String, String, u64);
 
 #[derive(Default)]
-pub struct MemoryStore {
+struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
     creds: RwLock<HashMap<String, CredentialSecret>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
@@ -141,35 +140,7 @@ impl MemoryStore {
         Self::default()
     }
 
-    /// Write one of a plane's kernel-held durable records.
-    ///
-    /// The verb is `busbar_contract::abi::sdk::store::StoreSlots::record_put`'s, and the three
-    /// below are its siblings. They are INHERENT rather than a trait implementation for one reason,
-    /// and it is a rule rather than a preference: the manifest allow-list refuses a store-kind crate
-    /// that names `busbar-kernel`, so the kernel's own record sink is not a trait this crate may
-    /// implement; and the contract's `StoreSlots` is the whole store table, of which this
-    /// backend answers the published half through [`Store`] above. What is here is the record half,
-    /// at the contract's own spelling, so the adapter that binds a loaded store to the kernel's sink
-    /// has one shape to forward to rather than two.
-    ///
-    /// The value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body
-    /// over it cannot be constructed, so this method cannot be handed one.
-    ///
-    /// # Errors
-    ///
-    /// Never, for a RAM backend: there is nothing under it to be unavailable. The result is the
-    /// contract's shape so a durable backend can answer in the same place.
-    pub fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), ContractStoreError> {
-        self.record_put_at(schema.as_str(), key, value);
-        Ok(())
-    }
-
-    /// [`Self::record_put`] under a schema named at run time (the store v3 table's `record_put`).
+    /// `Self::record_put` under a schema named at run time (the store v3 table's `record_put`).
     pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
         // No age sweep rides this write: a record-leg row is never evicted by age (see the
         // `records` field's doc), because nothing here can tell an active work handle from a
@@ -180,21 +151,7 @@ impl MemoryStore {
             .insert((schema.to_string(), key.to_vec()), value.clone());
     }
 
-    /// Read one of a plane's kernel-held durable records.
-    ///
-    /// # Errors
-    ///
-    /// Never, for a RAM backend. An absent record is `Ok(None)` and not an error: a plane asking
-    /// for a row it has not written yet is an ordinary answer, not a fault.
-    pub fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, ContractStoreError> {
-        Ok(self.record_get_at(schema.as_str(), key))
-    }
-
-    /// [`Self::record_get`] under a schema named at run time.
+    /// `Self::record_get` under a schema named at run time.
     pub(crate) fn record_get_at(&self, schema: &str, key: &[u8]) -> Option<RecordBytes> {
         self.records
             .read()
@@ -203,25 +160,7 @@ impl MemoryStore {
             .cloned()
     }
 
-    /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
-    ///
-    /// `limit` 0 means NOTHING, not everything. A caller that wants the whole prefix names a number;
-    /// reading zero as unbounded would make a miscomputed bound the one case that returns the entire
-    /// schema.
-    ///
-    /// # Errors
-    ///
-    /// Never, for a RAM backend.
-    pub fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
-        Ok(self.record_scan_at(schema.as_str(), prefix, limit))
-    }
-
-    /// [`Self::record_scan`] under a schema named at run time.
+    /// `Self::record_scan` under a schema named at run time.
     pub(crate) fn record_scan_at(
         &self,
         schema: &str,
@@ -959,48 +898,35 @@ impl Store for MemoryStore {
     }
 }
 
-/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
-/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
-/// constructor is the Rust-side twin a test drives directly: busbar's store money acceptance suite
-/// (`crates/plugin-loader/tests/store_money_acceptance.rs`) opens the build's store through it.
-pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
-    Ok(Box::new(MemoryStore::new()))
-}
-
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
-/// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
+/// `MemoryStore`, through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
-/// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
+/// (the `door_export` module): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
 pub use v3::door;
 
-/// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
+/// THE DROPPED-IN DOOR (feature `dropped-in`): `door` exported as the image's ONE symbol through
 /// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
 /// exported symbol is `#[unsafe(no_mangle)]`.
 #[cfg(feature = "dropped-in")]
 #[allow(unsafe_code)]
-pub mod door_export {
+mod door_export {
     busbar_contract::export_door!(crate::v3::door);
 }
 
-/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
-/// store axis — the same door a dropped-in store exports. `STORE` is `(key, ephemeral, door,
-/// canonical)`: the key `store.module` selects it by (and the store catalog prints), its statement
-/// that what it holds is lost on restart, its store v3 door, which boot opens it through (the store
-/// axis), and its canonical name — the manifest name its release tarball carries (plugins.yaml
-/// `manifest_name`, the repo), which config may name it by too, one plugin whichever door it
-/// arrives by (ARCHITECT C'). It claims no default: a config names its store (Q-STORE = (B)).
-pub mod linked {
-    /// `(key, ephemeral, door, canonical)`.
-    pub const STORE: (
-        &str,
-        bool,
-        busbar_contract::abi::mechanism::door::DoorFn,
-        &str,
-    ) = ("memory", true, super::door, "busbar-store-memory");
-}
-
 mod v3;
+
+#[cfg(test)]
+#[path = "tests/mutation_hardening.rs"]
+mod mutation_hardening;
+
+#[cfg(test)]
+#[path = "tests/record_conformance.rs"]
+mod record_conformance;
+
+#[cfg(test)]
+#[path = "tests/store_conformance.rs"]
+mod store_conformance;
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]

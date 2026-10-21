@@ -39,3 +39,5 @@ busbar-store-memory-plugin = { path = ".", features = ["dropped-in"] }
 # the built cdylib over busbar's REAL loader. Dev-only, never in the shipped artifact; the same
 # pinned rev, so one busbar source resolves.
 busbar-plugin-loader = { workspace = true, features = ["conformance"] }
+# The declares test reads the door's Statement back (`rendering::read`).
+busbar-contract = { workspace = true }

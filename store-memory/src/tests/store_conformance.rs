@@ -895,7 +895,7 @@ mod conf {
         );
     }
 }
-use busbar_store_memory::MemoryStore;
+use crate::MemoryStore;
 
 // A fresh MemoryStore per check is already an empty namespace, so `ns` only has to be stable.
 
