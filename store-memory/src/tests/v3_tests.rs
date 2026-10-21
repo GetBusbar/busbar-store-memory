@@ -371,16 +371,21 @@ fn slice_release_is_clamped_deduped_and_frees_headroom() {
     let s = capped(Dimension::Requests, 10);
     let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 10)]).expect("draw all");
     let id = g[0].slice_id;
-    assert_eq!(release(&s, op(2), 0, &[(id, 4)]), Ok(vec![4]));
+    // Clamped to what the slice has left (10), never more.
+    assert_eq!(release(&s, op(2), 0, &[(id, u64::MAX)]), Ok(vec![10]));
     assert_eq!(
-        release(&s, op(2), 0, &[(id, 4)]),
-        Ok(vec![4]),
+        release(&s, op(2), 0, &[(id, u64::MAX)]),
+        Ok(vec![10]),
         "a replay answers the original and takes nothing more back"
     );
-    // Clamped to what the slice has left (6), never more.
-    assert_eq!(release(&s, op(3), 0, &[(id, u64::MAX)]), Ok(vec![6]));
-    // All 10 are free again.
+    // The release closed the slice: another release of it returns nothing.
+    assert_eq!(release(&s, op(3), 0, &[(id, 4)]), Ok(vec![0]));
+    // All 10 are free again, and no more.
     reserve(&s, op(4), 0, &[cell(Dimension::Requests, 10)]).expect("headroom back");
+    assert_eq!(
+        reserve(&s, op(5), 0, &[cell(Dimension::Requests, 1)]),
+        Err(ReserveRefused::Exhausted { cell: 0 })
+    );
 }
 
 #[test]
@@ -626,9 +631,9 @@ fn the_retention_sweep_purges_the_token_ledger_and_no_money_slot() {
 }
 
 /// ROLLING MONEY WINDOWS ARE BOUNDED (Q128 store-memory sm1 LOW): a cap pushed for a newer window
-/// of a slot's family (bucket, pool, dimension, class) closes the family's windows older than the
-/// one before it: their open slices end and their caps and counters retire. Window 0 never rolls
-/// and is never retired. RED before the fix:
+/// of a slot's family (bucket, pool, dimension, class) retires the family's windows older than the
+/// one before it, with their counters, once no open slice draws on them; window 0 never rolls and is
+/// never retired, and a window with an open slice stays until it is released. RED before the fix:
 /// every window's cap and counter stayed for the life of the process.
 #[test]
 fn a_newer_windows_caps_retire_the_older_rolling_windows() {
@@ -671,19 +676,15 @@ fn a_newer_windows_caps_retire_the_older_rolling_windows() {
     };
     let open = draw(10, 60_000);
     push(2, 120_000);
-    // 120_000 is the newest and 60_000 the window before it: both kept, the slice open.
-    let held = s.v3.held();
-    assert_eq!((held.caps, held.used, held.slices), (3, 1, 1), "{held:?}");
     push(3, 180_000);
-    // 60_000 closes, and its open slice ends with it; 120_000 (the window before the newest),
-    // 180_000 and the window-0 gauge stay.
+    // 60_000 holds an open slice: kept. 120_000 is the window before the newest: kept.
     let held = s.v3.held();
-    assert_eq!((held.caps, held.used, held.slices), (3, 0, 0), "{held:?}");
-    assert_eq!(
-        release(&s, op(12), 0, &[(open[0].slice_id, 1)]).expect("release"),
-        vec![0],
-        "a slice whose window closed returns nothing more"
-    );
+    assert_eq!((held.caps, held.used), (4, 1), "{held:?}");
+    release(&s, op(12), 0, &[(open[0].slice_id, 0)]).expect("release");
+    push(4, 240_000);
+    // 60_000 and 120_000 retire; 180_000, 240_000 and the window-0 gauge stay.
+    let held = s.v3.held();
+    assert_eq!((held.caps, held.used), (3, 0), "{held:?}");
 }
 
 /// A SLICE WHOSE UNSPENT REACHES ZERO CLOSES AT ONCE (abi::store money.rs: "it closes when nothing is
@@ -708,30 +709,46 @@ fn a_slice_released_with_nothing_unspent_closes_at_once() {
         reserve(&s, op(4), 0, &[cell(Dimension::Requests, 9)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     ));
-    // A partial release still leaves the slice open for the rest.
-    let g = reserve(&s, op(5), 0, &[cell(Dimension::Requests, 4)]).expect("draw");
-    assert_eq!(
-        release(&s, op(6), 0, &[(g[0].slice_id, 1)]).expect("release"),
-        vec![1]
-    );
-    assert_eq!(s.v3.held().slices, 1);
 }
 
-/// A PARTLY SPENT SLICE IS USABLE UNTIL ITS WINDOW CLOSES, THEN ENDS AND FREES IT (`abi::store`
-/// money.rs slice life: "A partial release leaves the slice open for the rest"; rule (c), "past
-/// `valid_until_ms` the slice is EXPIRED, and whatever of it is still unreturned goes back to its
-/// window's headroom"; rule (d), a node-local slice may never expire, so its validity ends with its
-/// window). RED before the fix: the slice stayed open for the life of the process and pinned its
-/// window's cap and counter, which never retired.
+/// A SLICE PARTLY SPENT CLOSES ON ITS RELEASE AND FREES ITS WINDOW (coordinator ruling on the memory
+/// store's partly spent slices). A unit that spent part of its grant hands back the rest: the
+/// remainder is credited to the window's headroom, the slice closes, and the window's cap and
+/// counter retire with a newer window's cap push exactly as after a full release. RED before the
+/// fix: the slice stayed open with its spent part, never expired (`valid_until_ms = u64::MAX`), and
+/// kept its window's cap and counter for the life of the process.
 #[test]
-fn a_partly_spent_slice_is_usable_until_its_window_closes_then_frees_it() {
+fn a_partly_spent_slice_closes_on_its_release_and_no_longer_pins_its_window() {
+    // The release closes the slice and credits the remainder.
+    let s = capped(Dimension::Requests, 4);
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 4)]).expect("draw");
+    // The unit spent 1 of its 4 and hands back the other 3.
+    assert_eq!(
+        release(&s, op(2), 0, &[(g[0].slice_id, 3)]).expect("release"),
+        vec![3]
+    );
+    assert_eq!(s.v3.held().slices, 0, "a partly spent slice stays open");
+    assert_eq!(
+        release(&s, op(3), 0, &[(g[0].slice_id, 1)]).expect("release"),
+        vec![0],
+        "a closed slice returns nothing more"
+    );
+    reserve(&s, op(4), 0, &[cell(Dimension::Requests, 3)])
+        .expect("the returned remainder is drawable");
+    assert_eq!(
+        reserve(&s, op(5), 0, &[cell(Dimension::Requests, 1)]),
+        Err(ReserveRefused::Exhausted { cell: 0 }),
+        "the spent part stays drawn"
+    );
+
+    // The closed slice no longer pins its rolling window: a newer window's cap push retires it.
     let s = MemoryStore::new();
     let push = |n: u64, window_start: u64| {
         s.v3_window_caps(
             op(1_000_000 + n),
             &[Cap {
                 key: at(Dimension::Requests, window_start),
-                cap: 10,
+                cap: 4,
                 config_gen: 1,
             }],
         )
@@ -744,37 +761,22 @@ fn a_partly_spent_slice_is_usable_until_its_window_closes_then_frees_it() {
         0,
         &[Cell {
             key: at(Dimension::Requests, 60_000),
-            amount: 6,
+            amount: 4,
         }],
     )
     .expect("draw");
-    let id = g[0].slice_id;
-    // A partial release: 2 back, the slice stays open for the rest.
     assert_eq!(
-        release(&s, op(11), 0, &[(id, 2)]).expect("release"),
-        vec![2]
+        release(&s, op(11), 0, &[(g[0].slice_id, 3)]).expect("release"),
+        vec![3]
     );
-    assert_eq!(s.v3.held().slices, 1, "a partial release closed the slice");
     push(2, 120_000);
-    // 60_000 is now the window before the newest: still open, and the slice still usable.
-    assert_eq!(
-        release(&s, op(12), 0, &[(id, 1)]).expect("release"),
-        vec![1]
-    );
-    let held = s.v3.held();
-    assert_eq!((held.caps, held.used, held.slices), (2, 1, 1), "{held:?}");
-    // 60_000 closes: the slice ends with it, and its cap and counter retire.
     push(3, 180_000);
+    // 60_000 retires with its counter; 120_000 (the window before the newest) and 180_000 stay.
     let held = s.v3.held();
     assert_eq!(
         (held.caps, held.used, held.slices),
         (2, 0, 0),
-        "the partly spent slice still pins its closed window: {held:?}"
-    );
-    assert_eq!(
-        release(&s, op(13), 0, &[(id, 3)]).expect("release"),
-        vec![0],
-        "an ended slice returns nothing more"
+        "the partly spent slice still pins its window: {held:?}"
     );
 }
 
