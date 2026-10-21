@@ -10,10 +10,10 @@
 //! not belong inside the src-level unit-test file, per the repo's test-locality convention
 //! (`docs/code-layout.md`).
 
+use crate::MemoryStore;
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore as Store, VirtualKey,
 };
-use busbar_store_memory::MemoryStore;
 
 fn plane_record(kind: &str, id: &str, seq: u64, body: Vec<u8>) -> PlaneRecord {
     PlaneRecord {

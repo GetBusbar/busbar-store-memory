@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The **in-memory store as a droppable busbar plugin**: the `cdylib` a signed tarball of the store
-//! carries (`kind: store`, key `memory`). The logic crate is re-exported whole, and its door
+//! carries (`kind: store`, key `memory`). The logic crate's one public item is its door
 //! (`busbar_store_memory::door`) is this image's ONE symbol, `busbar_plugin_door`, under this
 //! crate's `dropped-in` feature, which switches on the logic crate's own `export_door!`
 //! (`busbar_store_memory::door_export`). The door is exported in ONE place, so the library carries
@@ -13,4 +13,4 @@
 
 #![forbid(unsafe_code)]
 
-pub use busbar_store_memory::*;
+pub use busbar_store_memory::door;

@@ -18,9 +18,74 @@
 //!
 //! Its own file rather than an inline module, per the repo's test-locality rule.
 
+use crate::MemoryStore;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_store_memory::MemoryStore;
+use busbar_contract::kinds::StoreError as ContractStoreError;
+
+/// The typed record verbs the contract spells (`RecordSchemaId`), over the schema-by-name ones the
+/// store v3 table uses; only these tests call them.
+impl MemoryStore {
+    /// Write one of a plane's kernel-held durable records.
+    ///
+    /// The verb is `busbar_contract::abi::sdk::store::StoreSlots::record_put`'s, and the three
+    /// below are its siblings. They are INHERENT rather than a trait implementation for one reason,
+    /// and it is a rule rather than a preference: the manifest allow-list refuses a store-kind crate
+    /// that names `busbar-kernel`, so the kernel's own record sink is not a trait this crate may
+    /// implement; and the contract's `StoreSlots` is the whole store table, of which this
+    /// backend answers the published half through [`Store`] above. What is here is the record half,
+    /// at the contract's own spelling, so the adapter that binds a loaded store to the kernel's sink
+    /// has one shape to forward to rather than two.
+    ///
+    /// The value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body
+    /// over it cannot be constructed, so this method cannot be handed one.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend: there is nothing under it to be unavailable. The result is the
+    /// contract's shape so a durable backend can answer in the same place.
+    pub fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), ContractStoreError> {
+        self.record_put_at(schema.as_str(), key, value);
+        Ok(())
+    }
+
+    /// Read one of a plane's kernel-held durable records.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend. An absent record is `Ok(None)` and not an error: a plane asking
+    /// for a row it has not written yet is an ordinary answer, not a fault.
+    pub fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, ContractStoreError> {
+        Ok(self.record_get_at(schema.as_str(), key))
+    }
+
+    /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
+    ///
+    /// `limit` 0 means NOTHING, not everything. A caller that wants the whole prefix names a number;
+    /// reading zero as unbounded would make a miscomputed bound the one case that returns the entire
+    /// schema.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend.
+    pub fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
+        Ok(self.record_scan_at(schema.as_str(), prefix, limit))
+    }
+}
 
 const TASKS: RecordSchemaId = RecordSchemaId::new("task");
 const EVENTS: RecordSchemaId = RecordSchemaId::new("task_event");
