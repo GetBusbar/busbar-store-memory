@@ -23,8 +23,9 @@ use busbar_contract::records::{
     UsageLedger, VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
-// contract's own spelling. `StoreError` is imported under a second name because the two protocols
-// each carry one and this crate answers both.
+// contract's own spelling. `StoreError` above is the record protocol's (`RecordStoreError`); the
+// kinds protocol's own error, `busbar_contract::kinds::StoreError`, is named only by the record
+// conformance test, as `ContractStoreError`.
 use busbar_contract::kinds::RecordBytes;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
