@@ -894,7 +894,7 @@ impl Store for MemoryStore {
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
 /// (the `door_export` module): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
-pub use v3::{door, MACRO_DOOR};
+pub use v3::door;
 
 /// THE DROPPED-IN DOOR (feature `dropped-in`): `door` exported as the image's ONE symbol through
 /// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the

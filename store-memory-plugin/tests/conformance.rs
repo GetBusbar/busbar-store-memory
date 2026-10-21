@@ -9,8 +9,17 @@
 //! `conformance.json`, and requires every step's crossings exactly at the script's pin and the two
 //! folds equal. The suite's RED arms are kept beside it. `plugin-ci.yml` runs it under `--release`.
 
+use busbar_plugin_loader::dispatch::LoadedDoor;
+
+/// This crate's own door, as the loader names a compiled-in one.
+#[allow(unused_unsafe)]
+fn loaded() -> LoadedDoor {
+    // SAFETY: `door` is this crate's own `plugin_door!` entry.
+    unsafe { LoadedDoor::from_raw(busbar_store_memory::door) }
+}
+
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_store_memory::MACRO_DOOR,
+    loaded: loaded(),
     cdylib: "busbar_store_memory_plugin",
     inputs: include_str!("conformance.json"),
 }
