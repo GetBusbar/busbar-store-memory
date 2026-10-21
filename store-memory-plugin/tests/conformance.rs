@@ -10,7 +10,7 @@
 //! folds equal. The suite's RED arms are kept beside it. `plugin-ci.yml` runs it under `--release`.
 
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_store_memory::door,
+    door: busbar_store_memory::MACRO_DOOR,
     cdylib: "busbar_store_memory_plugin",
     inputs: include_str!("conformance.json"),
 }
