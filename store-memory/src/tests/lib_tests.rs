@@ -886,6 +886,39 @@ fn record_put_never_evicts_a_record_by_age() {
     );
 }
 
+/// AN EMPTY PUT REMOVES THE ROW (slot 40's rule, ARCHITECT 2026-10-21): the host writes every
+/// strike (a swept work handle, a dropped chain) as an empty `record_put` and reads empty as
+/// absent, so the row LEAVES the map: `record_get` answers `None`, `record_scan` never returns it,
+/// and the map shrinks. A store that kept the empty row would keep every strike forever. Removing
+/// a row that is not there is `Ok` and changes nothing.
+#[test]
+fn an_empty_put_removes_the_row() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
+    let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
+    let held = |s: &MemoryStore| s.records.read().unwrap_or_else(|e| e.into_inner()).len();
+
+    let s = MemoryStore::new();
+    s.record_put(SCHEMA, b"a/1", &body(b"one")).unwrap();
+    s.record_put(SCHEMA, b"a/2", &body(b"two")).unwrap();
+    assert_eq!(held(&s), 2);
+
+    s.record_put(SCHEMA, b"a/1", &body(b"")).unwrap();
+    assert_eq!(held(&s), 1, "the struck row left the map");
+    assert_eq!(s.record_get(SCHEMA, b"a/1").unwrap(), None);
+    assert_eq!(
+        s.record_scan(SCHEMA, b"a/", 10).unwrap(),
+        vec![(b"a/2".to_vec(), body(b"two"))],
+        "a scan never returns a struck row"
+    );
+
+    // A strike of a row that is not there is Ok, and the map is unchanged.
+    s.record_put(SCHEMA, b"a/9", &body(b"")).unwrap();
+    assert_eq!(held(&s), 1);
+    // Put again after the strike, the key is a fresh row.
+    s.record_put(SCHEMA, b"a/1", &body(b"again")).unwrap();
+    assert_eq!(s.record_get(SCHEMA, b"a/1").unwrap(), Some(body(b"again")));
+}
+
 /// A rewrite REPLACES: the record leg answers the newest body for a key, and a scan sees one row
 /// per key, however long ago the key was first written.
 #[test]
