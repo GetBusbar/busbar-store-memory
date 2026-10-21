@@ -272,10 +272,10 @@ fn a_scan_of_an_untouched_schema_is_empty() {
 /// The record verbs and the PUBLISHED kind-tagged verbs are two protocols over two maps, and
 /// neither can see the other's rows.
 ///
-/// This is the cell that protects the byte-identity the previous release's callers depend on: if a
-/// record leg's write showed up in `list_plane_records`, every legacy reader of a plane's rows would
-/// start seeing rows it never wrote, and a record leg would have become a change to the published
-/// path rather than an addition beside it.
+/// This is the cell that protects the published surface's byte-identity (the kind-tagged verbs are
+/// 1.6.0's published store surface): if a record leg's write showed up in `list_plane_records`,
+/// every reader of a plane's rows would start seeing rows it never wrote, and a record leg would
+/// have become a change to the published path rather than an addition beside it.
 #[test]
 fn the_record_verbs_do_not_disturb_the_published_kind_tagged_rows() {
     use busbar_contract::records::{
