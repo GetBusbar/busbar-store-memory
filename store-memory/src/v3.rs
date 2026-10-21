@@ -23,6 +23,10 @@
 //! leaves the slice open for the rest; it closes when nothing is left, and a release with nothing
 //! unspent closes it too (its unit spent the rest). `abi::store::money`'s slice-life rule (c)/(d).
 //!
+//! A RELEASE ON WINDOW 0 IS FINAL (`abi::store::money` slice life (e)): window 0 never rolls, so a
+//! release of a window-0 slice takes back what it names, the spent rest stays counted, and the
+//! slice closes. Without it a partly spent window-0 slice would outlive its holder.
+//!
 //! WHERE A SLICE'S VALIDITY ENDS: a single-node slice has no expiry, so its validity ends with its
 //! WINDOW. When a rolling window closes (a cap pushed for a newer window retires it, see
 //! `retire_rolled_windows`), every slice still open on it closes as an expired slice does under
@@ -658,9 +662,11 @@ impl MemoryStore {
                 d.left -= back;
                 let slot = d.slot.clone();
                 // Nothing left to return, or nothing unspent to return it from: the slice closes
-                // (its unit spent the rest; "it closes when nothing is left"). A partial release
-                // leaves it open for the rest, until its window closes.
-                if d.left == 0 || unspent == 0 {
+                // (its unit spent the rest; "it closes when nothing is left"). A release on window 0
+                // is FINAL (slice life (e)): window 0 never rolls, so the slice closes now and its
+                // spent rest stays counted. On a rolling window a partial release leaves the slice
+                // open for the rest, until its window closes.
+                if d.left == 0 || unspent == 0 || slot.window_start == 0 {
                     inner.close(id, now);
                 }
                 if let Some(u) = inner.used.get_mut(&slot) {
