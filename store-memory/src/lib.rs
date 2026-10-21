@@ -978,7 +978,7 @@ pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
 /// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
-pub use v3::door;
+pub use v3::{door, MACRO_DOOR};
 
 /// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
 /// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
@@ -998,12 +998,8 @@ pub mod door_export {
 /// arrives by (ARCHITECT C'). It claims no default: a config names its store (Q-STORE = (B)).
 pub mod linked {
     /// `(key, ephemeral, door, canonical)`.
-    pub const STORE: (
-        &str,
-        bool,
-        busbar_contract::abi::mechanism::door::DoorFn,
-        &str,
-    ) = ("memory", true, super::door, "busbar-store-memory");
+    pub const STORE: (&str, bool, busbar_contract::abi::sdk::door::MacroDoor, &str) =
+        ("memory", true, super::MACRO_DOOR, "busbar-store-memory");
 }
 
 mod v3;
