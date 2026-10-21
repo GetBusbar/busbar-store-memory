@@ -4,6 +4,7 @@
 //! Tests for `crates/store-memory/src/lib.rs`.
 
 use super::*;
+use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::records::SecretForm;
 
 fn key(id: &str) -> VirtualKey {
