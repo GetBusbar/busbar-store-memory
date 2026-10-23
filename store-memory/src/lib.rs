@@ -963,6 +963,17 @@ impl Store for MemoryStore {
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
+    fn purge_metering_before(&self, _bucket: &str) -> StoreResult<u64> {
+        Ok(0)
+    }
+    fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
+        let mut all = Store::list_audit(self)?;
+        let limit = limit as usize;
+        if all.len() > limit {
+            all.drain(0..all.len() - limit);
+        }
+        Ok(all)
+    }
 }
 
 /// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
