@@ -1051,4 +1051,7 @@ impl StoreSlots for MemoryStore {
             self, kind, token, expires_at, now,
         ))
     }
+    fn connect(&self, _cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        Step::Ready(Ok(()))
+    }
 }
