@@ -689,3 +689,57 @@ fn a_slice_released_with_nothing_unspent_closes_at_once() {
     );
     assert_eq!(s.v3.held().slices, 1);
 }
+
+/// RED before slice life (e): a release on window 0 is final. The holder of a 6-unit window-0 slice
+/// spent 4 and hands back 2; the slice closes, so a second release returns 0, the 4 spent stay
+/// counted (6 more fill the cap of 10) and nothing past the cap is granted. A slice on a rolling
+/// window keeps the partial-release rule: what it still holds can be handed back later.
+#[test]
+fn a_release_on_window_0_is_final() {
+    let s = MemoryStore::new();
+    let zero = CellKey {
+        bucket: "window-0",
+        pool: None,
+        dimension: Dimension::NanoUnits,
+        window_start: 0,
+    };
+    s.v3_window_caps(
+        op(1),
+        &[Cap {
+            key: zero,
+            cap: 10,
+            config_gen: 1,
+        }],
+    )
+    .expect("the window-0 cap is pushed");
+    let draw =
+        |n: u64, amount: u64| reserve(&s, op(n), 7, &[Cell { key: zero, amount }]).map(|g| g[0]);
+    let g = draw(2, 6).expect("a window-0 draw within its cap");
+    assert_eq!(
+        release(&s, op(3), 7, &[(g.slice_id, 2)]).expect("released"),
+        vec![2]
+    );
+    assert_eq!(
+        release(&s, op(4), 7, &[(g.slice_id, 4)]).expect("answered"),
+        vec![0],
+        "a window-0 slice stayed open after its release"
+    );
+    assert_eq!(draw(5, 6).expect("the returned 2 are drawable").granted, 6);
+    assert_eq!(
+        draw(6, 1).map(|g| g.granted),
+        Err(ReserveRefused::Exhausted { cell: 0 }),
+        "the spent part of a released window-0 slice was not counted"
+    );
+
+    let s = capped(Dimension::NanoUnits, 10);
+    let g = reserve(&s, op(7), 7, &[cell(Dimension::NanoUnits, 6)]).expect("a rolling draw")[0];
+    assert_eq!(
+        release(&s, op(8), 7, &[(g.slice_id, 2)]).expect("released"),
+        vec![2]
+    );
+    assert_eq!(
+        release(&s, op(9), 7, &[(g.slice_id, 4)]).expect("released"),
+        vec![4],
+        "a rolling-window slice keeps what it still holds for a later release"
+    );
+}
