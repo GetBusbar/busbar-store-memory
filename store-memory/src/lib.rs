@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The DEFAULT `db` backend: an in-memory (RAM) store. Zero setup, no dependencies beyond the
-//! `busbar-contract` records contract — governance works out of the box. EPHEMERAL: every counter, key, and
+//! The in-memory (RAM) `kind: store` backend, key `memory`: zero setup, nothing to run outside the
+//! process. A config names it; it is not a default. EPHEMERAL: every counter, key, and
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
@@ -51,14 +51,14 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
+type MeteringKey = (String, u64, String, String, u64);
+
 /// In-memory `Store`: keys by id, row-looked-up credentials by id (`(kind, public_id)` lookup and
 /// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
 /// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
 /// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
 /// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
-/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
-type MeteringKey = (String, u64, String, String, u64);
-
 #[derive(Default)]
 pub struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
