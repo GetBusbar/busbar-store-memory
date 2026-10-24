@@ -649,16 +649,24 @@ impl Store for MemoryStore {
         // table: a row nobody will ever clean up, and a `put_key` the operator never asked for. Both
         // rows go in under ONE acquisition of the same two guards `delete_key` takes, in the same
         // fixed order, with every precondition tested before anything is written.
+        // A key that already carries a tombstone is refused outright: `put_credential` never hangs a
+        // credential off a tombstoned key, so the mint (which must answer what `put_key` then
+        // `put_credential` would) cannot insert a LIVE credential under one — that would let
+        // `lookup_credential_secret` resolve secret material for a deleted key.
+        if key.deleted_at.is_some() {
+            return Err(StoreError(format!(
+                "put_key_with_credential: key '{}' is tombstoned; a credential is never minted onto it",
+                key.id
+            )));
+        }
         let mut keys = self.keys();
         let mut creds = self.creds();
-        if key.deleted_at.is_none() {
-            if let Some(existing) = keys.get(&key.id) {
-                if existing.deleted_at.is_some() {
-                    return Err(StoreError(format!(
-                        "put_key_with_credential: '{}' is tombstoned and its id is never reissued",
-                        key.id
-                    )));
-                }
+        if let Some(existing) = keys.get(&key.id) {
+            if existing.deleted_at.is_some() {
+                return Err(StoreError(format!(
+                    "put_key_with_credential: '{}' is tombstoned and its id is never reissued",
+                    key.id
+                )));
             }
         }
         // The credential must name the key being minted alongside it — a mint that quietly hung its
