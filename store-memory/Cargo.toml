@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The default in-memory (RAM) backend for busbar's durable governance store — ephemeral, zero-setup."
+description = "The in-memory (RAM) backend for busbar's governance store — ephemeral, zero-setup."
 
 [lints]
 workspace = true
