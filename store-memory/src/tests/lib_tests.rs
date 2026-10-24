@@ -1162,3 +1162,20 @@ fn a_purge_honours_the_retention_it_is_handed_never_the_kinds_name() {
     assert!(s.get_plane_record("order", "o-active").unwrap().is_some());
     assert!(s.get_plane_record("order", "o-terminal").unwrap().is_none());
 }
+
+#[test]
+fn a_mint_with_a_tombstoned_key_writes_nothing() {
+    let s = MemoryStore::new();
+    let mut dead = key("dead");
+    dead.deleted_at = Some(5);
+    assert!(
+        s.put_key_with_credential(&dead, &credential("c", "dead", "pub"))
+            .is_err(),
+        "a credential is never minted onto a key that carries a tombstone"
+    );
+    assert!(s.get_key("dead").unwrap().is_none());
+    assert!(s
+        .lookup_credential_secret("generic", "pub")
+        .unwrap()
+        .is_none());
+}
