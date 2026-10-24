@@ -239,6 +239,8 @@ pub(crate) struct Held {
     pub(crate) caps: usize,
     pub(crate) used: usize,
     pub(crate) slices: usize,
+    /// How many closed slices are remembered (so a late release of one answers 0).
+    pub(crate) closed: usize,
 }
 
 #[cfg(test)]
@@ -253,6 +255,7 @@ impl State {
             caps: inner.caps.len(),
             used: inner.used.len(),
             slices: inner.slices.len(),
+            closed: inner.closed.len(),
         }
     }
 }

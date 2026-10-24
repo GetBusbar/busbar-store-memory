@@ -271,7 +271,9 @@ fn lookup_credential_secret_resolves_by_kind_and_public_id() {
 #[test]
 fn scrub_key_requires_tombstone_first() {
     let s = MemoryStore::new();
-    s.put_key(&key("a")).unwrap();
+    let mut labelled = key("a");
+    labelled.labels.insert("team".to_string(), "x".to_string());
+    s.put_key(&labelled).unwrap();
     // A live key must not be scrubbable — that would be silent, un-auditable data loss on an
     // active principal.
     assert!(s.scrub_key("a").is_err());
@@ -1161,4 +1163,49 @@ fn a_purge_honours_the_retention_it_is_handed_never_the_kinds_name() {
     );
     assert!(s.get_plane_record("order", "o-active").unwrap().is_some());
     assert!(s.get_plane_record("order", "o-terminal").unwrap().is_none());
+}
+
+#[test]
+fn purge_plane_records_before_counts_what_it_drops_and_keeps_the_cutoff() {
+    let s = MemoryStore::new();
+    for (id, ts) in [("below", 4), ("at", 5), ("above", 6)] {
+        let mut r = plane_task(id, PlaneDisposition::Active);
+        r.kind = "call".to_string();
+        r.ts = ts;
+        s.upsert_plane_record(r.view()).unwrap();
+    }
+    // Only the row strictly older than the cutoff goes, and the count says so.
+    assert_eq!(s.purge_plane_records_before("call", 5).unwrap(), 1);
+    assert!(s.get_plane_record("call", "below").unwrap().is_none());
+    assert!(s.get_plane_record("call", "at").unwrap().is_some());
+    assert!(s.get_plane_record("call", "above").unwrap().is_some());
+}
+
+#[test]
+fn lookup_credential_secret_matches_the_kind_too() {
+    let s = MemoryStore::new();
+    s.put_key(&key("a")).unwrap();
+    s.put_credential(&credential("c", "a", "p")).unwrap();
+    assert!(s.lookup_credential_secret("aws", "p").unwrap().is_none());
+    assert!(s
+        .lookup_credential_secret("generic", "p")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn a_mint_with_a_tombstoned_key_writes_nothing() {
+    let s = MemoryStore::new();
+    let mut dead = key("dead");
+    dead.deleted_at = Some(5);
+    assert!(
+        s.put_key_with_credential(&dead, &credential("c", "dead", "pub"))
+            .is_err(),
+        "a credential is never minted onto a key that carries a tombstone"
+    );
+    assert!(s.get_key("dead").unwrap().is_none());
+    assert!(s
+        .lookup_credential_secret("generic", "pub")
+        .unwrap()
+        .is_none());
 }
