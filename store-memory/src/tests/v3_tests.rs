@@ -446,6 +446,22 @@ fn an_op_id_is_forgotten_after_its_retention() {
 }
 
 #[test]
+fn an_op_id_is_remembered_inside_its_retention() {
+    let s = MemoryStore::new();
+    s.pin_clock(1_000);
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+        .expect("a");
+    s.pin_clock(1_000 + OP_ID_RETENTION_SECS - 1);
+    // Recording another op sweeps, but the first op is still inside its retention: its replay
+    // applies nothing.
+    s.v3_add_usage_batch(op(2), &[("j", 60, delta(1, 1))])
+        .expect("b");
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+        .expect("replay");
+    assert_eq!(s.get_usage("k", 60).expect("read").requests, 1);
+}
+
+#[test]
 fn append_batch_advances_the_stream_head_once_per_op() {
     let s = MemoryStore::new();
     let r = |b: u8| RecordBytes::new(vec![b]).expect("record");
@@ -742,4 +758,50 @@ fn a_release_on_window_0_is_final() {
         vec![4],
         "a rolling-window slice keeps what it still holds for a later release"
     );
+}
+
+/// The closed-slice memory is bounded: past 1024 entries a release forgets the ones older than the
+/// op-id retention, so a long-lived node does not keep every slice it ever closed.
+#[test]
+fn closed_slices_are_forgotten_after_their_retention() {
+    let s = MemoryStore::new();
+    s.pin_clock(1_000);
+    let zero = CellKey {
+        bucket: "window-0",
+        pool: None,
+        dimension: Dimension::NanoUnits,
+        window_start: 0,
+    };
+    s.v3_window_caps(
+        op(1),
+        &[Cap {
+            key: zero,
+            cap: 1_000_000,
+            config_gen: 1,
+        }],
+    )
+    .expect("the window-0 cap is pushed");
+    // Each reserve and release takes two op ids; a window-0 release closes its slice.
+    let mut n = 10;
+    let mut open_and_close = || {
+        let g = reserve(
+            &s,
+            op(n),
+            7,
+            &[Cell {
+                key: zero,
+                amount: 1,
+            }],
+        )
+        .expect("draw")[0];
+        release(&s, op(n + 1), 7, &[(g.slice_id, 1)]).expect("release");
+        n += 2;
+    };
+    for _ in 0..1025 {
+        open_and_close();
+    }
+    assert_eq!(s.v3.held().closed, 1025);
+    s.pin_clock(1_000 + OP_ID_RETENTION_SECS);
+    open_and_close();
+    assert_eq!(s.v3.held().closed, 1);
 }
