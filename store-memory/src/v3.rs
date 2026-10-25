@@ -665,11 +665,12 @@ impl StoreSlots for MemoryStore {
         fork_refusal: true,
     };
 
-    fn validate(_settings: &[u8]) -> Result<(), String> {
-        Ok(())
+    fn validate(settings: &[u8]) -> Result<(), String> {
+        crate::check_settings(settings)
     }
 
-    fn open(_settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+    fn open(settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+        crate::check_settings(settings)?;
         Ok(Self::new())
     }
 

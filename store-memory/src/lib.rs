@@ -7,12 +7,11 @@
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 //!
 //! ONE DOOR, COMPILED IN OR DROPPED IN (#2, THE DESIGN §2): [`door`] is what a build that links
-//! this crate registers ([`linked::STORE`]) and what the dropped-in `cdylib` exports (feature
-//! `dropped-in`, the `door_export` module). Unsafe code is denied crate-wide; the one exception is
-//! the door module the contract's export macro generates, whose C-ABI symbols cannot be written
-//! without it.
+//! this crate registers ([`linked::STORE`]) and what the dropped-in `cdylib` exports. The export
+//! itself (`export_door!`, whose C-ABI symbol needs `unsafe`) lives in the sibling
+//! `busbar-store-memory-plugin` crate, so this crate carries no `unsafe` at all.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
@@ -971,8 +970,21 @@ impl Store for MemoryStore {
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
-    fn purge_metering_before(&self, _bucket: &str) -> StoreResult<u64> {
-        Ok(0)
+    /// Purge every metering row of `bucket`, the same semantics as the durable stores (postgres's
+    /// `purge_metering_before`): the rows in that bucket go, others stay, and the answer is the
+    /// number of rows removed. The trait spells the bucket as a string while `add_metering` and
+    /// `list_metering` use a `u64`, so it is parsed; a string that is not an integer is REFUSED
+    /// (postgres's exact wording), not treated as an empty bucket.
+    fn purge_metering_before(&self, bucket: &str) -> StoreResult<u64> {
+        let bucket: u64 = bucket.parse().map_err(|_| {
+            StoreError(format!(
+                "purge_metering_before: invalid bucket {bucket:?}, expected an integer"
+            ))
+        })?;
+        let mut m = self.metering();
+        let before = m.len();
+        m.retain(|(_, b, _, _, _), _| *b != bucket);
+        Ok((before - m.len()) as u64)
     }
     fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
         let mut all = Store::list_audit(self)?;
@@ -984,29 +996,44 @@ impl Store for MemoryStore {
     }
 }
 
-/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
-/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
+/// The memory store takes no settings: empty, whitespace, `null` and `{}` are all "none"; malformed
+/// JSON, a non-object, or any key is refused. Shared by `validate`, `open` and [`open`](crate::open),
+/// so their refusals are the same words.
+pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
+    if settings.trim_ascii().is_empty() {
+        return Ok(());
+    }
+    let v: serde_json::Value = serde_json::from_slice(settings)
+        .map_err(|e| format!("invalid memory plugin config: {e}"))?;
+    match v {
+        serde_json::Value::Null => Ok(()),
+        serde_json::Value::Object(m) => match m.keys().next() {
+            None => Ok(()),
+            Some(k) => Err(format!(
+                "invalid memory plugin config: unknown setting `{k}` (the memory store takes no settings)"
+            )),
+        },
+        other => Err(format!(
+            "invalid memory plugin config: expected a JSON object, got {other}"
+        )),
+    }
+}
+
+/// Open this store in process. It takes no settings (see [`check_settings`]: empty, `null` or `{}`
+/// only), so every body opens the same fresh RAM store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
 /// constructor is the Rust-side twin a test drives directly: busbar's store money acceptance suite
 /// (`crates/plugin-loader/tests/store_money_acceptance.rs`) opens the build's store through it.
-pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
+pub fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
+    check_settings(cfg.as_bytes())?;
     Ok(Box::new(MemoryStore::new()))
 }
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
 /// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
-/// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
+/// (from the plugin crate): compiled in or dropped in, the kernel reaches the same table. The memory store
 /// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
 pub use v3::{door, MACRO_DOOR};
-
-/// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
-/// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
-/// exported symbol is `#[unsafe(no_mangle)]`.
-#[cfg(feature = "dropped-in")]
-#[allow(unsafe_code)]
-pub mod door_export {
-    busbar_contract::export_door!(crate::v3::door);
-}
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
 /// store axis — the same door a dropped-in store exports. `STORE` is `(key, ephemeral, door,

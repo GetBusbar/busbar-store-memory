@@ -98,9 +98,9 @@ dependencies = [
 name = "busbar-store-memory-plugin"
 version = "1.5.0"
 dependencies = [
+ "busbar-contract",
  "busbar-plugin-loader",
  "busbar-store-memory",
- "busbar-store-memory-plugin",
 ]
 
 [[package]]
