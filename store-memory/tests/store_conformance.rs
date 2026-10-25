@@ -323,10 +323,11 @@ mod conf {
         );
         assert!(
             store
-                .lookup_credential_secret("generic", &format!("AKIA{cred_id}"))
-                .expect("lookup is never an error")
-                .is_none(),
-            "the refused credential still resolves on the verify path"
+                .list_credentials(&key_id)
+                .expect("listing is never an error")
+                .iter()
+                .all(|c| c.id != cred_id),
+            "the refused credential is still listed under its key"
         );
     }
 
