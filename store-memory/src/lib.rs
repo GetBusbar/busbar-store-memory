@@ -440,22 +440,6 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn scrub_key(&self, id: &str) -> StoreResult<()> {
-        let mut keys = self.keys();
-        let Some(key) = keys.get_mut(id) else {
-            return Err(StoreError(format!("scrub_key: unknown key '{id}'")));
-        };
-        if key.deleted_at.is_none() {
-            return Err(StoreError(format!(
-                "scrub_key: '{id}' is not tombstoned — delete it first"
-            )));
-        }
-        key.name.clear();
-        key.labels.clear();
-        key.revision = self.next_revision();
-        Ok(())
-    }
-
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .keys_read()
@@ -471,16 +455,6 @@ impl Store for MemoryStore {
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
-    }
-
-    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
-        // THE TOKEN LEDGER'S retention sweep (`RecordStore::purge_windows_before`), and nothing
-        // else: its cutoff is the ledger's, and a money slot's window is keyed in its own unit, with
-        // window 0 never rolling. The money windows are bounded where they roll (`v3_window_caps`).
-        let mut usage = self.usage();
-        let held = usage.len();
-        usage.retain(|(_, window_start), _| *window_start >= before);
-        Ok((held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -697,18 +671,6 @@ impl Store for MemoryStore {
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
             .collect())
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> StoreResult<Option<CredentialSecret>> {
-        Ok(self
-            .creds_read()
-            .values()
-            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
-            .cloned())
     }
 
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
@@ -969,22 +931,6 @@ impl Store for MemoryStore {
             .plane_records_read()
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
-    }
-    /// Purge every metering row of `bucket`, the same semantics as the durable stores (postgres's
-    /// `purge_metering_before`): the rows in that bucket go, others stay, and the answer is the
-    /// number of rows removed. The trait spells the bucket as a string while `add_metering` and
-    /// `list_metering` use a `u64`, so it is parsed; a string that is not an integer is REFUSED
-    /// (postgres's exact wording), not treated as an empty bucket.
-    fn purge_metering_before(&self, bucket: &str) -> StoreResult<u64> {
-        let bucket: u64 = bucket.parse().map_err(|_| {
-            StoreError(format!(
-                "purge_metering_before: invalid bucket {bucket:?}, expected an integer"
-            ))
-        })?;
-        let mut m = self.metering();
-        let before = m.len();
-        m.retain(|(_, b, _, _, _), _| *b != bucket);
-        Ok((before - m.len()) as u64)
     }
     fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
         let mut all = Store::list_audit(self)?;
