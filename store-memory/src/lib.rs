@@ -970,15 +970,17 @@ impl Store for MemoryStore {
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
-    /// Purge every metering row of `bucket`, the same semantics as the durable stores (sqlite's
+    /// Purge every metering row of `bucket`, the same semantics as the durable stores (postgres's
     /// `purge_metering_before`): the rows in that bucket go, others stay, and the answer is the
     /// number of rows removed. The trait spells the bucket as a string while `add_metering` and
-    /// `list_metering` use a `u64`, so it is parsed; a string that is not an integer names no
-    /// bucket and removes nothing (sqlite compares it against the integer column and matches no row).
+    /// `list_metering` use a `u64`, so it is parsed; a string that is not an integer is REFUSED
+    /// (postgres's exact wording), not treated as an empty bucket.
     fn purge_metering_before(&self, bucket: &str) -> StoreResult<u64> {
-        let Ok(bucket) = bucket.trim().parse::<u64>() else {
-            return Ok(0);
-        };
+        let bucket: u64 = bucket.parse().map_err(|_| {
+            StoreError(format!(
+                "purge_metering_before: invalid bucket {bucket:?}, expected an integer"
+            ))
+        })?;
         let mut m = self.metering();
         let before = m.len();
         m.retain(|(_, b, _, _, _), _| *b != bucket);

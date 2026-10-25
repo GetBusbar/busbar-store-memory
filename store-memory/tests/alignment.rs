@@ -35,9 +35,13 @@ fn purge_metering_before_removes_only_the_named_bucket() {
     assert_eq!(s.purge_metering_before("100").unwrap(), 2);
     assert!(s.list_metering(100).unwrap().is_empty());
     assert_eq!(s.list_metering(200).unwrap().len(), 1);
-    // Purging again, or a bucket that holds nothing or is not an integer, removes nothing.
+    // Purging again, or a bucket that holds nothing, removes nothing.
     assert_eq!(s.purge_metering_before("100").unwrap(), 0);
-    assert_eq!(s.purge_metering_before("not-a-bucket").unwrap(), 0);
+    let e = s.purge_metering_before("not-a-bucket").unwrap_err();
+    assert_eq!(
+        e.0,
+        "purge_metering_before: invalid bucket \"not-a-bucket\", expected an integer"
+    );
     assert_eq!(s.list_metering(200).unwrap().len(), 1);
 }
 
