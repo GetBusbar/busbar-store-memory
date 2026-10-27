@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "busbar-store-memory-plugin"
-version = "1.5.0"
+version = "1.6.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -28,4 +28,5 @@ busbar-contract = { workspace = true }
 # busbar's published conformance suite (`conformance_suite!`): it loads the linked door and dlopens
 # the built cdylib over busbar's REAL loader. Dev-only, never in the shipped artifact; the same
 # pinned rev, so one busbar source resolves.
-busbar-plugin-loader = { workspace = true, features = ["conformance"] }
+busbar-plugin-loader = { workspace = true }
+busbar-test-kit = { workspace = true }
