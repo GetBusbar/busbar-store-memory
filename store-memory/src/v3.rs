@@ -5,25 +5,19 @@
 //! `op_id`-carrying writes, the ledger ops, the money slots and `window_caps`.
 //!
 //! DEDUPE (`abi::store` S1-S4): every `op_id` this store APPLIED is remembered, with a SHA-256
-//! digest of the op's value fields and its answer, for [`OP_ID_RETENTION_SECS`]. The digest is fixed
-//! size, so what the log keeps per op does not grow with what the op wrote. A replay with the same
-//! value fields applies nothing and answers the original; different value fields are a conflict. The dedupe log, the
-//! caps, the drawn totals and the slices live under ONE lock, and an op's dedupe check, its effect
-//! and its record happen under it, so two racing calls with one `op_id` apply once. This store is
-//! EPHEMERAL (its Statement tail says so): the log is lost on restart together with everything it
-//! guards, so a replay after a restart re-applies onto an empty store, which is the state the
-//! restart left.
+//! digest of the op's value fields and its answer, for [`OP_ID_RETENTION_SECS`]. A replay with the
+//! same value fields applies nothing and answers the original; different value fields are a
+//! conflict. The dedupe log, caps, drawn totals and slices live under ONE lock, and an op's check,
+//! effect and record happen under it, so two racing calls with one `op_id` apply once. The log is
+//! lost on restart together with everything it guards.
 //!
-//! EPOCH AND SLICE LIFE (`abi::store::SLICE_TTL_MS`, the store kind's spec): this is a NODE-LOCAL
-//! store, and its rule holds for a SINGLE node only. It holds one constant epoch, never answers a
-//! stale one (the `epoch` a caller states is accepted as given) and grants slices that never expire
-//! (`valid_until_ms = u64::MAX`): no other node can draw against its windows. A store a fleet shares
-//! persists and fences the epoch and bounds every slice. A release, here as everywhere, returns at
-//! most what the slice has left, and a slice with nothing left returns `0`. A release with nothing
-//! unspent closes the slice: its unit spent the rest, so nothing is left.
+//! EPOCH AND SLICE LIFE (`abi::store::SLICE_TTL_MS`): a NODE-LOCAL store. It holds one constant
+//! epoch, accepts the `epoch` a caller states, and grants slices that never expire
+//! (`valid_until_ms = u64::MAX`). A release returns at most what the slice has left; a release
+//! with nothing unspent closes the slice.
 //!
-//! GRANT SIZE: a cell grants its whole `amount` or the reserve fails; the per-dimension test
-//! is 1.5.5's, cited on `abi::store::ReserveIn`.
+//! GRANT SIZE: a cell grants its whole `amount` or the reserve fails; the per-dimension test is
+//! 1.5.5's, cited on `abi::store::ReserveIn`.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
@@ -38,7 +32,8 @@ use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStore, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, Retention, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 
 use crate::MemoryStore;
@@ -301,15 +296,29 @@ impl MemoryStore {
         }
     }
 
+    /// [`Self::deduped`] for an op whose answer is just `Done`.
+    fn applied(
+        &self,
+        op: OpId,
+        body: Body,
+        apply: impl FnOnce(&Self) -> RecordStoreResult<()>,
+    ) -> OpResult<()> {
+        self.deduped(op, body, |s, _| {
+            apply(s).map_err(failed)?;
+            Ok(Answer::Done)
+        })
+        .map(drop)
+    }
+
     /// Every audit record in `entries` would append (none forks a stored `seq`, nor another in the
     /// batch), checked before any is applied.
-    fn audit_fits(&self, entries: &[AuditRecord]) -> OpResult<()> {
-        let audit = self.audit.read().unwrap_or_else(|e| e.into_inner());
+    fn audit_fits(&self, entries: &[AuditRecord]) -> RecordStoreResult<()> {
+        let audit = crate::read(&self.audit);
         let mut batch: HashMap<u64, &AuditRecord> = HashMap::new();
         for e in entries {
             let prior = audit.get(&e.seq).or_else(|| batch.get(&e.seq).copied());
             if prior.is_some_and(|p| p != e) {
-                return Err(OpRefused::Failed(format!(
+                return Err(RecordStoreError(format!(
                     "append_audit: seq {} already holds a DIFFERENT record — the audit chain has forked",
                     e.seq
                 )));
@@ -333,29 +342,17 @@ impl MemoryStore {
         let body = body(format_args!(
             "add_usage:{bucket:?}:{window_start}:{delta:?}"
         ));
-        self.deduped(op, body, |s, _| {
-            s.add_usage(bucket, window_start, delta).map_err(failed)?;
-            Ok(Answer::Done)
-        })
-        .map(drop)
+        self.applied(op, body, |s| s.add_usage(bucket, window_start, delta))
     }
 
     pub(crate) fn v3_add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()> {
         let body = body(format_args!("add_metering:{delta:?}"));
-        self.deduped(op, body, |s, _| {
-            s.add_metering(delta).map_err(failed)?;
-            Ok(Answer::Done)
-        })
-        .map(drop)
+        self.applied(op, body, |s| s.add_metering(delta))
     }
 
     pub(crate) fn v3_append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()> {
         let body = body(format_args!("append_audit:{entry:?}"));
-        self.deduped(op, body, |s, _| {
-            s.append_audit(entry).map_err(failed)?;
-            Ok(Answer::Done)
-        })
-        .map(drop)
+        self.applied(op, body, |s| s.append_audit(entry))
     }
 
     pub(crate) fn v3_append_plane_record_op(
@@ -364,11 +361,7 @@ impl MemoryStore {
         record: PlaneRecordRef<'_>,
     ) -> OpResult<()> {
         let body = body(format_args!("append_plane_record:{:?}", record.to_record()));
-        self.deduped(op, body, |s, _| {
-            s.append_plane_record(record).map_err(failed)?;
-            Ok(Answer::Done)
-        })
-        .map(drop)
+        self.applied(op, body, |s| s.append_plane_record(record))
     }
 
     pub(crate) fn v3_append_batch(
@@ -595,37 +588,27 @@ impl MemoryStore {
         cells: &[(&str, u64, UsageDelta)],
     ) -> OpResult<()> {
         let body = body(format_args!("add_usage_batch:{cells:?}"));
-        self.deduped(op, body, |s, _| {
-            // A RAM ledger cannot fail an add, so applying in order is atomic.
-            for (bucket, window, delta) in cells {
-                s.add_usage(bucket, *window, delta).map_err(failed)?;
-            }
-            Ok(Answer::Done)
+        // A RAM ledger cannot fail an add, so applying in order is atomic.
+        self.applied(op, body, |s| {
+            cells
+                .iter()
+                .try_for_each(|(bucket, window, delta)| s.add_usage(bucket, *window, delta))
         })
-        .map(drop)
     }
 
     pub(crate) fn v3_add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
         let body = body(format_args!("add_metering_batch:{deltas:?}"));
-        self.deduped(op, body, |s, _| {
-            for d in deltas {
-                s.add_metering(d).map_err(failed)?;
-            }
-            Ok(Answer::Done)
+        self.applied(op, body, |s| {
+            deltas.iter().try_for_each(|d| s.add_metering(d))
         })
-        .map(drop)
     }
 
     pub(crate) fn v3_append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()> {
         let body = body(format_args!("append_audit_batch:{entries:?}"));
-        self.deduped(op, body, |s, _| {
+        self.applied(op, body, |s| {
             s.audit_fits(entries)?;
-            for e in entries {
-                s.append_audit(e).map_err(failed)?;
-            }
-            Ok(Answer::Done)
+            entries.iter().try_for_each(|e| s.append_audit(e))
         })
-        .map(drop)
     }
 
     pub(crate) fn v3_window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused> {
@@ -658,6 +641,15 @@ impl MemoryStore {
     }
 }
 
+/// Each listed slot answers `Step::Ready` over the body named before its argument list.
+macro_rules! ready {
+    ($($name:ident => $via:ident::$body:ident ($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {$(
+        fn $name(&self, _: &mut Op<'_>, $($arg: $ty),*) -> Step<$ret> {
+            Step::Ready($via::$body(self, $($arg),*))
+        }
+    )*};
+}
+
 impl StoreSlots for MemoryStore {
     const TAIL: Tail = Tail {
         ephemeral: true,
@@ -672,104 +664,6 @@ impl StoreSlots for MemoryStore {
     fn open(settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
         crate::check_settings(settings)?;
         Ok(Self::new())
-    }
-
-    fn add_usage_op(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        bucket: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_add_usage_op(op, bucket, window_start, delta))
-    }
-
-    fn add_metering_op(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        delta: &MeteringDelta,
-    ) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_add_metering_op(op, delta))
-    }
-
-    fn append_audit_op(&self, _: &mut Op<'_>, op: OpId, entry: &AuditRecord) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_append_audit_op(op, entry))
-    }
-
-    fn append_plane_record_op(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        record: PlaneRecordRef<'_>,
-    ) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_append_plane_record_op(op, record))
-    }
-
-    fn append_batch(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        stream: &str,
-        records: &[RecordBytes],
-    ) -> Step<OpResult<Head>> {
-        Step::Ready(self.v3_append_batch(op, stream, records))
-    }
-
-    fn heads(&self, _: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
-        Step::Ready(self.v3_heads())
-    }
-
-    fn session_put(
-        &self,
-        _: &mut Op<'_>,
-        session: u64,
-        node: &str,
-        principal: &str,
-    ) -> Step<Result<(), String>> {
-        Step::Ready(self.v3_session_put(session, node, principal))
-    }
-
-    fn session_remove(&self, _: &mut Op<'_>, session: u64) -> Step<Result<(), String>> {
-        Step::Ready(self.v3_session_remove(session))
-    }
-
-    fn sessions_for(
-        &self,
-        _: &mut Op<'_>,
-        principal: &str,
-    ) -> Step<Result<Vec<(u64, String)>, String>> {
-        Step::Ready(self.v3_sessions_for(principal))
-    }
-
-    fn record_put(
-        &self,
-        _: &mut Op<'_>,
-        schema: &str,
-        key: &[u8],
-        value: &[u8],
-    ) -> Step<Result<(), String>> {
-        Step::Ready(self.v3_record_put(schema, key, value))
-    }
-
-    fn record_get(
-        &self,
-        _: &mut Op<'_>,
-        schema: &str,
-        key: &[u8],
-    ) -> Step<Result<Option<RecordBytes>, String>> {
-        Step::Ready(self.v3_record_get(schema, key))
-    }
-
-    fn record_scan(
-        &self,
-        _: &mut Op<'_>,
-        schema: &str,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Step<Result<Scanned, String>> {
-        Step::Ready(self.v3_record_scan(schema, prefix, limit))
     }
 
     fn reserve<'c>(
@@ -794,271 +688,52 @@ impl StoreSlots for MemoryStore {
         Step::Ready(self.v3_slice_release(op, epoch, items, released))
     }
 
-    fn add_usage_batch(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_add_usage_batch(op, cells))
-    }
-
-    fn add_metering_batch(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        deltas: &[MeteringDelta],
-    ) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_add_metering_batch(op, deltas))
-    }
-
-    fn append_audit_batch(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        entries: &[AuditRecord],
-    ) -> Step<OpResult<()>> {
-        Step::Ready(self.v3_append_audit_batch(op, entries))
-    }
-
-    fn window_caps(
-        &self,
-        _: &mut Op<'_>,
-        op: OpId,
-        caps: &[Cap<'_>],
-    ) -> Step<Result<(), CapsRefused>> {
-        Step::Ready(self.v3_window_caps(op, caps))
-    }
-
-    fn put_key(&self, _: &mut Op<'_>, key: &VirtualKey) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::put_key(self, key))
-    }
-
-    fn get_key(&self, _: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
-        Step::Ready(RecordStore::get_key(self, id))
-    }
-
-    fn list_keys(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
-        Step::Ready(RecordStore::list_keys(self))
-    }
-
-    fn delete_key(&self, _: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::delete_key(self, id))
-    }
-
-    fn scrub_key(&self, _: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::scrub_key(self, id))
-    }
-
-    fn list_keys_since(
-        &self,
-        _: &mut Op<'_>,
-        since: u64,
-    ) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
-        Step::Ready(RecordStore::list_keys_since(self, since))
-    }
-
-    fn get_usage(
-        &self,
-        _: &mut Op<'_>,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> Step<RecordStoreResult<UsageLedger>> {
-        Step::Ready(RecordStore::get_usage(self, bucket_id, window_start))
-    }
-
-    fn put_usage(
-        &self,
-        _: &mut Op<'_>,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::put_usage(
-            self,
-            bucket_id,
-            window_start,
-            ledger,
-        ))
-    }
-
-    fn list_metering(
-        &self,
-        _: &mut Op<'_>,
-        bucket: u64,
-    ) -> Step<RecordStoreResult<Vec<MeteringRow>>> {
-        Step::Ready(RecordStore::list_metering(self, bucket))
-    }
-
-    fn purge_windows_before(&self, _: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
-        Step::Ready(RecordStore::purge_windows_before(self, before))
-    }
-
-    fn purge_metering_before(&self, _: &mut Op<'_>, bucket: &str) -> Step<RecordStoreResult<u64>> {
-        Step::Ready(RecordStore::purge_metering_before(self, bucket))
-    }
-
-    fn put_credential(
-        &self,
-        _: &mut Op<'_>,
-        secret: &CredentialSecret,
-    ) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::put_credential(self, secret))
-    }
-
-    fn put_key_with_credential(
-        &self,
-        _: &mut Op<'_>,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::put_key_with_credential(self, key, secret))
-    }
-
-    fn list_credentials(
-        &self,
-        _: &mut Op<'_>,
-        key_id: &str,
-    ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
-        Step::Ready(RecordStore::list_credentials(self, key_id))
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        public_id: &str,
-    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
-        Step::Ready(RecordStore::lookup_credential_secret(self, kind, public_id))
-    }
-
-    fn revoke_credential(
-        &self,
-        _: &mut Op<'_>,
-        id: &str,
-        reason: &str,
-    ) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::revoke_credential(self, id, reason))
-    }
-
-    fn list_credentials_since(
-        &self,
-        _: &mut Op<'_>,
-        since: u64,
-    ) -> Step<RecordStoreResult<Vec<CredentialSecret>>> {
-        Step::Ready(RecordStore::list_credentials_since(self, since))
-    }
-
-    fn list_audit(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
-        Step::Ready(RecordStore::list_audit(self))
-    }
-
-    fn add_denylist(&self, _: &mut Op<'_>, sub: &str, reason: &str) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::add_denylist(self, sub, reason))
-    }
-
-    fn list_denylist(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
-        Step::Ready(RecordStore::list_denylist(self))
-    }
-
-    fn list_audit_tail(
-        &self,
-        _: &mut Op<'_>,
-        limit: u64,
-    ) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
-        Step::Ready(RecordStore::list_audit_tail(self, limit))
-    }
-
-    fn upsert_plane_record(
-        &self,
-        _: &mut Op<'_>,
-        record: PlaneRecordRef<'_>,
-    ) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::upsert_plane_record(self, record))
-    }
-
-    fn get_plane_record(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        id: &str,
-    ) -> Step<RecordStoreResult<Option<Vec<u8>>>> {
-        Step::Ready(RecordStore::get_plane_record(self, kind, id))
-    }
-
-    fn list_plane_records(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> Step<RecordStoreResult<Vec<Vec<u8>>>> {
-        Step::Ready(RecordStore::list_plane_records(self, kind, selector))
-    }
-
-    fn list_plane_record_parents(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-    ) -> Step<RecordStoreResult<Vec<String>>> {
-        Step::Ready(RecordStore::list_plane_record_parents(self, kind))
-    }
-
-    fn purge_plane_records_before(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        before: u64,
-    ) -> Step<RecordStoreResult<u64>> {
-        Step::Ready(RecordStore::purge_plane_records_before(self, kind, before))
-    }
-
-    fn purge_plane_records(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> Step<RecordStoreResult<u64>> {
-        Step::Ready(RecordStore::purge_plane_records(
-            self, kind, before, retention,
-        ))
-    }
-
-    fn delete_plane_record(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        id: &str,
-    ) -> Step<RecordStoreResult<()>> {
-        Step::Ready(RecordStore::delete_plane_record(self, kind, id))
-    }
-
-    fn redeem_plane_token(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> Step<RecordStoreResult<bool>> {
-        Step::Ready(RecordStore::redeem_plane_token(
-            self, kind, token, expires_at, now,
-        ))
-    }
-
-    fn plane_token_live(
-        &self,
-        _: &mut Op<'_>,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> Step<RecordStoreResult<bool>> {
-        Step::Ready(RecordStore::plane_token_live(
-            self, kind, token, expires_at, now,
-        ))
-    }
-    fn connect(&self, _cx: &mut Op<'_>) -> Step<Result<(), String>> {
-        Step::Ready(Ok(()))
+    ready! {
+        add_usage_op => Self::v3_add_usage_op(op: OpId, bucket: &str, window_start: u64, delta: &UsageDelta) -> OpResult<()>;
+        add_metering_op => Self::v3_add_metering_op(op: OpId, delta: &MeteringDelta) -> OpResult<()>;
+        append_audit_op => Self::v3_append_audit_op(op: OpId, entry: &AuditRecord) -> OpResult<()>;
+        append_plane_record_op => Self::v3_append_plane_record_op(op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
+        append_batch => Self::v3_append_batch(op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head>;
+        heads => Self::v3_heads() -> Result<Vec<(String, Head)>, String>;
+        session_put => Self::v3_session_put(session: u64, node: &str, principal: &str) -> Result<(), String>;
+        session_remove => Self::v3_session_remove(session: u64) -> Result<(), String>;
+        sessions_for => Self::v3_sessions_for(principal: &str) -> Result<Vec<(u64, String)>, String>;
+        record_put => Self::v3_record_put(schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
+        record_get => Self::v3_record_get(schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
+        record_scan => Self::v3_record_scan(schema: &str, prefix: &[u8], limit: u32) -> Result<Scanned, String>;
+        add_usage_batch => Self::v3_add_usage_batch(op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
+        add_metering_batch => Self::v3_add_metering_batch(op: OpId, deltas: &[MeteringDelta]) -> OpResult<()>;
+        append_audit_batch => Self::v3_append_audit_batch(op: OpId, entries: &[AuditRecord]) -> OpResult<()>;
+        window_caps => Self::v3_window_caps(op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused>;
+        put_key => RecordStore::put_key(key: &VirtualKey) -> RecordStoreResult<()>;
+        get_key => RecordStore::get_key(id: &str) -> RecordStoreResult<Option<VirtualKey>>;
+        list_keys => RecordStore::list_keys() -> RecordStoreResult<Vec<VirtualKey>>;
+        delete_key => RecordStore::delete_key(id: &str) -> RecordStoreResult<()>;
+        scrub_key => RecordStore::scrub_key(id: &str) -> RecordStoreResult<()>;
+        list_keys_since => RecordStore::list_keys_since(since: u64) -> RecordStoreResult<Vec<VirtualKey>>;
+        get_usage => RecordStore::get_usage(bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
+        put_usage => RecordStore::put_usage(bucket_id: &str, window_start: u64, ledger: &UsageLedger) -> RecordStoreResult<()>;
+        list_metering => RecordStore::list_metering(bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
+        purge_windows_before => RecordStore::purge_windows_before(before: u64) -> RecordStoreResult<u64>;
+        purge_metering_before => RecordStore::purge_metering_before(bucket: &str) -> RecordStoreResult<u64>;
+        put_credential => RecordStore::put_credential(secret: &CredentialSecret) -> RecordStoreResult<()>;
+        put_key_with_credential => RecordStore::put_key_with_credential(key: &VirtualKey, secret: &CredentialSecret) -> RecordStoreResult<()>;
+        list_credentials => RecordStore::list_credentials(key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>>;
+        lookup_credential_secret => RecordStore::lookup_credential_secret(kind: &str, public_id: &str) -> RecordStoreResult<Option<CredentialSecret>>;
+        revoke_credential => RecordStore::revoke_credential(id: &str, reason: &str) -> RecordStoreResult<()>;
+        list_credentials_since => RecordStore::list_credentials_since(since: u64) -> RecordStoreResult<Vec<CredentialSecret>>;
+        list_audit => RecordStore::list_audit() -> RecordStoreResult<Vec<AuditRecord>>;
+        add_denylist => RecordStore::add_denylist(sub: &str, reason: &str) -> RecordStoreResult<()>;
+        list_denylist => RecordStore::list_denylist() -> RecordStoreResult<Vec<String>>;
+        list_audit_tail => RecordStore::list_audit_tail(limit: u64) -> RecordStoreResult<Vec<AuditRecord>>;
+        upsert_plane_record => RecordStore::upsert_plane_record(record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
+        get_plane_record => RecordStore::get_plane_record(kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
+        list_plane_records => RecordStore::list_plane_records(kind: &str, selector: &PlaneSelector<'_>) -> RecordStoreResult<Vec<Vec<u8>>>;
+        list_plane_record_parents => RecordStore::list_plane_record_parents(kind: &str) -> RecordStoreResult<Vec<String>>;
+        purge_plane_records_before => RecordStore::purge_plane_records_before(kind: &str, before: u64) -> RecordStoreResult<u64>;
+        purge_plane_records => RecordStore::purge_plane_records(kind: &str, before: u64, retention: Retention) -> RecordStoreResult<u64>;
+        delete_plane_record => RecordStore::delete_plane_record(kind: &str, id: &str) -> RecordStoreResult<()>;
+        redeem_plane_token => RecordStore::redeem_plane_token(kind: &str, token: &str, expires_at: u64, now: u64) -> RecordStoreResult<bool>;
+        plane_token_live => RecordStore::plane_token_live(kind: &str, token: &str, expires_at: u64, now: u64) -> RecordStoreResult<bool>;
     }
 }
