@@ -932,7 +932,7 @@ fn record_put_rewrite_replaces_the_row() {
     );
 }
 
-/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `plane_key`
+/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `upsert_key`
 /// resolves its identity to its own `id` and it lands where `get_plane_record`/`plane_token_live`
 /// point-read.
 fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
@@ -1186,4 +1186,51 @@ fn a_mint_with_a_tombstoned_key_writes_nothing() {
         .lookup_credential_secret("generic", "pub")
         .unwrap()
         .is_none());
+}
+
+/// UPSERT IS BY `(kind, id)` (the contract's `RecordStore::upsert_plane_record` /
+/// `get_plane_record`), with or without a parent: an upserted record that names a parent reads back
+/// by its own id, a second id under the same parent is a second record (never an overwrite), and
+/// the parent-scoped listing still returns both.
+#[test]
+fn a_parented_upserted_record_reads_back_by_its_own_id() {
+    let s = MemoryStore::new();
+    let child = |id: &str, body: &[u8]| PlaneRecord {
+        kind: "task".to_string(),
+        id: id.to_string(),
+        parent: Some("ctx-1".to_string()),
+        seq: 0,
+        ts: 0,
+        disposition: PlaneDisposition::Active,
+        body: body.to_vec(),
+    };
+    s.upsert_plane_record(child("t1", b"one").view()).unwrap();
+    s.upsert_plane_record(child("t2", b"two").view()).unwrap();
+
+    assert_eq!(
+        s.get_plane_record("task", "t1").unwrap(),
+        Some(b"one".to_vec())
+    );
+    assert_eq!(
+        s.get_plane_record("task", "t2").unwrap(),
+        Some(b"two".to_vec())
+    );
+    let mut listed = s
+        .list_plane_records("task", &PlaneSelector::Parent("ctx-1".into()))
+        .unwrap();
+    listed.sort();
+    assert_eq!(listed, vec![b"one".to_vec(), b"two".to_vec()]);
+
+    // A second upsert of one id replaces it; deleting it by id removes it alone.
+    s.upsert_plane_record(child("t1", b"one'").view()).unwrap();
+    assert_eq!(
+        s.get_plane_record("task", "t1").unwrap(),
+        Some(b"one'".to_vec())
+    );
+    s.delete_plane_record("task", "t1").unwrap();
+    assert_eq!(s.get_plane_record("task", "t1").unwrap(), None);
+    assert_eq!(
+        s.get_plane_record("task", "t2").unwrap(),
+        Some(b"two".to_vec())
+    );
 }

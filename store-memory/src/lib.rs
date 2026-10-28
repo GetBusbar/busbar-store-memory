@@ -175,11 +175,17 @@ impl MemoryStore {
         now()
     }
 
-    /// A plane record's identity in the one map: its `parent` when it is an appended child, else
-    /// its own `id` at `seq` 0.
-    fn plane_key(record: PlaneRecordRef<'_>) -> PlaneKey {
+    /// An APPENDED record's position in the one map: its chain (its `parent`, else its own `id`)
+    /// at its `seq`.
+    fn chain_key(record: PlaneRecordRef<'_>) -> PlaneKey {
         let identity = record.parent.unwrap_or(record.id).to_string();
         (record.kind.to_string(), identity, record.seq)
+    }
+
+    /// An UPSERTED record's key in the one map: its own `id`, parent or not (the contract upserts
+    /// by `(kind, id)`), so `get_plane_record`/`delete_plane_record` reach it by that id.
+    fn upsert_key(record: PlaneRecordRef<'_>) -> PlaneKey {
+        (record.kind.to_string(), record.id.to_string(), record.seq)
     }
 
     /// The two credential-table preconditions, shared by `put_credential` and the atomic
@@ -516,7 +522,7 @@ impl Store for MemoryStore {
     }
 
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
-        write(&self.plane_records).insert(Self::plane_key(record), record.to_record());
+        write(&self.plane_records).insert(Self::upsert_key(record), record.to_record());
         Ok(())
     }
 
@@ -530,7 +536,7 @@ impl Store for MemoryStore {
         // Append-only with the same fork rule as `append_audit`: identical is a retry, different
         // at an occupied `(parent, seq)` is a second writer forking the chain.
         let mut records = write(&self.plane_records);
-        let key = Self::plane_key(record);
+        let key = Self::chain_key(record);
         match records.get(&key) {
             Some(existing) if existing.view() == record => Ok(()),
             Some(_) => Err(StoreError(format!(
