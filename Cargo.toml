@@ -35,8 +35,9 @@ repository = "https://github.com/GetBusbar/busbar-store-memory"
 needless_update = "allow"
 
 [workspace.dependencies]
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "e2fc6c458aaf1c3406954a65a942a4c7acae88ce" }
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "e2fc6c458aaf1c3406954a65a942a4c7acae88ce" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "f1de87b560a4baa337f1cb3a4ca7049b9e66dcf0" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "f1de87b560a4baa337f1cb3a4ca7049b9e66dcf0" }
+busbar-test-kit = { git = "https://github.com/GetBusbar/busbar", rev = "f1de87b560a4baa337f1cb3a4ca7049b9e66dcf0" }
 # busbar's root [workspace.dependencies], third-party rows, at e2fc6c458aaf1c3406954a65a942a4c7acae88ce
 arc-swap = "1"
 async-trait = "0.1"

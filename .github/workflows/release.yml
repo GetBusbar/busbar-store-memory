@@ -28,7 +28,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@e2fc6c458aaf1c3406954a65a942a4c7acae88ce
+    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@f1de87b560a4baa337f1cb3a4ca7049b9e66dcf0
     with:
       plugin_crate: busbar-store-memory-plugin
       manifest_name: busbar-store-memory
@@ -49,7 +49,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@e2fc6c458aaf1c3406954a65a942a4c7acae88ce
+    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@f1de87b560a4baa337f1cb3a4ca7049b9e66dcf0
     with:
       version: ${{ github.ref_name }}
       asset_prefix: busbar-store-memory
