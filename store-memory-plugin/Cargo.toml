@@ -29,3 +29,5 @@ busbar-contract = { workspace = true }
 # the built cdylib over busbar's REAL loader. Dev-only, never in the shipped artifact; the same
 # pinned rev, so one busbar source resolves.
 busbar-plugin-loader = { workspace = true, features = ["conformance"] }
+# The Statement rendering's reader, for the declared secret paths the conformance test pins.
+busbar-contract = { workspace = true }
