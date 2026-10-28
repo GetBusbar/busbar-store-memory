@@ -933,7 +933,7 @@ fn record_put_rewrite_replaces_the_row() {
     );
 }
 
-/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `plane_key`
+/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `upsert_key`
 /// resolves its identity to its own `id` and it lands where `get_plane_record`/`plane_token_live`
 /// point-read.
 fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
