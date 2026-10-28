@@ -103,6 +103,7 @@ pub struct MemoryStore {
     /// `keys`/`creds` mutation.
     revision: AtomicU64,
     /// Test-only pinned clock: `0` means the wall clock, otherwise `self.now()` answers this.
+    #[cfg(test)]
     clock: AtomicU64,
     /// The store v3 slots' own state ([`v3`]).
     v3: v3::State,
@@ -127,18 +128,8 @@ impl MemoryStore {
         key: &[u8],
         value: &RecordBytes,
     ) -> Result<(), ContractStoreError> {
-        self.record_put_at(schema.as_str(), key, value);
-        Ok(())
-    }
-
-    pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
-        let mut records = write(&self.records);
-        let at = (schema.to_string(), key.to_vec());
-        if value.as_slice().is_empty() {
-            records.remove(&at);
-        } else {
-            records.insert(at, value.clone());
-        }
+        self.v3_record_put(schema.as_str(), key, value.as_slice())
+            .map_err(ContractStoreError::Rejected)
     }
 
     /// Read one of a plane's kernel-held durable records (`Ok(None)` when absent).
@@ -151,13 +142,8 @@ impl MemoryStore {
         schema: RecordSchemaId,
         key: &[u8],
     ) -> Result<Option<RecordBytes>, ContractStoreError> {
-        Ok(self.record_get_at(schema.as_str(), key))
-    }
-
-    pub(crate) fn record_get_at(&self, schema: &str, key: &[u8]) -> Option<RecordBytes> {
-        read(&self.records)
-            .get(&(schema.to_string(), key.to_vec()))
-            .cloned()
+        self.v3_record_get(schema.as_str(), key)
+            .map_err(ContractStoreError::Rejected)
     }
 
     /// Walk a plane's records under a prefix, in key order, at most `limit` of them. `limit` 0
@@ -172,23 +158,8 @@ impl MemoryStore {
         prefix: &[u8],
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
-        Ok(self.record_scan_at(schema.as_str(), prefix, limit))
-    }
-
-    pub(crate) fn record_scan_at(
-        &self,
-        schema: &str,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Vec<(Vec<u8>, RecordBytes)> {
-        // Seek to the first key at or after `(schema, prefix)` and stop at the first past the prefix.
-        let from = (schema.to_string(), prefix.to_vec());
-        read(&self.records)
-            .range(from..)
-            .take_while(|((s, k), _)| s == schema && k.starts_with(prefix))
-            .take(limit as usize)
-            .map(|((_, k), value)| (k.clone(), value.clone()))
-            .collect()
+        self.v3_record_scan(schema.as_str(), prefix, limit)
+            .map_err(ContractStoreError::Rejected)
     }
 
     fn next_revision(&self) -> u64 {
@@ -197,10 +168,11 @@ impl MemoryStore {
 
     /// "Now" as the retention sweep sees it: the pinned test clock if set, else the wall clock.
     fn now(&self) -> u64 {
-        match self.clock.load(Ordering::Relaxed) {
-            0 => now(),
-            pinned => pinned,
+        #[cfg(test)]
+        if let pinned @ 1.. = self.clock.load(Ordering::Relaxed) {
+            return pinned;
         }
+        now()
     }
 
     /// A plane record's identity in the one map: its `parent` when it is an appended child, else
@@ -689,7 +661,7 @@ impl Store for MemoryStore {
 }
 
 /// The memory store takes no settings: empty, whitespace, `null` and `{}` are all "none"; malformed
-/// JSON, a non-object, or any key is refused. Shared by `validate`, `open` and [`open`](crate::open).
+/// JSON, a non-object, or any key is refused. Shared by `validate` and `open`.
 pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
     if settings.trim_ascii().is_empty() {
         return Ok(());
@@ -708,13 +680,6 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
             "invalid memory plugin config: expected a JSON object, got {other}"
         )),
     }
-}
-
-/// Open this store in process (see [`check_settings`]: every accepted body opens the same fresh RAM
-/// store). The Rust-side twin of [`door`] that busbar's store acceptance suite drives directly.
-pub fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
-    check_settings(cfg.as_bytes())?;
-    Ok(Box::new(MemoryStore::new()))
 }
 
 /// The store door (store v3): every slot of the table over [`MemoryStore`], through the contract's
