@@ -1,49 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Sibling-alignment checks: the memory store's settings contract (it takes none) and
-//! `purge_metering_before` really purging the billing ledger, like sqlite/postgres/mysql.
+//! Sibling-alignment checks: the memory store's settings contract (it takes none).
 
-use busbar_contract::records::{MeteringDelta, RecordStore as Store};
 use busbar_store_memory::MemoryStore;
-
-fn delta(key: &str, bucket: u64, priced_from_ms: u64) -> MeteringDelta {
-    MeteringDelta {
-        key_id: key.into(),
-        bucket,
-        model: "m".into(),
-        provider: "p".into(),
-        tokens_input: 1,
-        tokens_output: 1,
-        tokens_cache_read: 0,
-        tokens_cache_write: 0,
-        requests: 1,
-        billable_requests: 1,
-        key_group_at_use: "g".into(),
-        pricing_version: "v".into(),
-        priced_from_ms,
-        usage_units: Default::default(),
-    }
-}
-
-#[test]
-fn purge_metering_before_removes_only_the_named_bucket() {
-    let s = MemoryStore::new();
-    s.add_metering(&delta("k1", 100, 0)).unwrap();
-    s.add_metering(&delta("k2", 100, 5)).unwrap();
-    s.add_metering(&delta("k1", 200, 0)).unwrap();
-    assert_eq!(s.purge_metering_before("100").unwrap(), 2);
-    assert!(s.list_metering(100).unwrap().is_empty());
-    assert_eq!(s.list_metering(200).unwrap().len(), 1);
-    // Purging again, or a bucket that holds nothing, removes nothing.
-    assert_eq!(s.purge_metering_before("100").unwrap(), 0);
-    let e = s.purge_metering_before("not-a-bucket").unwrap_err();
-    assert_eq!(
-        e.0,
-        "purge_metering_before: invalid bucket \"not-a-bucket\", expected an integer"
-    );
-    assert_eq!(s.list_metering(200).unwrap().len(), 1);
-}
 
 #[test]
 fn settings_accept_empty_whitespace_null_and_empty_object() {

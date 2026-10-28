@@ -6,6 +6,29 @@
 use super::*;
 use busbar_contract::records::SecretForm;
 
+/// A credential resolved by `(kind, public_id)`, read off the store's own rows: what the tests below
+/// check a cascade, a refusal or the retention sweep left behind.
+trait Lookup {
+    fn lookup_credential_secret(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>>;
+}
+
+impl Lookup for MemoryStore {
+    fn lookup_credential_secret(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>> {
+        Ok(read(&self.creds)
+            .values()
+            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
+            .cloned())
+    }
+}
+
 fn key(id: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
@@ -249,39 +272,6 @@ fn next_revision_is_strictly_monotonic_starting_above_zero() {
         "the counter must not hand out 0 as a real revision"
     );
     assert_eq!(rev_b, rev_a + 1, "each call must advance by exactly 1");
-}
-
-#[test]
-fn lookup_credential_secret_resolves_by_kind_and_public_id() {
-    let s = MemoryStore::new();
-    s.put_key(&key("a")).unwrap();
-    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-    let found = s
-        .lookup_credential_secret("generic", "AKIA1")
-        .unwrap()
-        .unwrap();
-    assert_eq!(found.meta.key_id, "a");
-    assert_eq!(found.secret, "v1:plain:sek");
-    assert!(s
-        .lookup_credential_secret("generic", "unknown")
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn scrub_key_requires_tombstone_first() {
-    let s = MemoryStore::new();
-    let mut labelled = key("a");
-    labelled.labels.insert("team".to_string(), "x".to_string());
-    s.put_key(&labelled).unwrap();
-    // A live key must not be scrubbable — that would be silent, un-auditable data loss on an
-    // active principal.
-    assert!(s.scrub_key("a").is_err());
-    s.delete_key("a").unwrap();
-    s.scrub_key("a").unwrap();
-    let scrubbed = s.get_key("a").unwrap().unwrap();
-    assert!(scrubbed.name.is_empty());
-    assert!(scrubbed.labels.is_empty());
 }
 
 #[test]
@@ -1179,18 +1169,6 @@ fn purge_plane_records_before_counts_what_it_drops_and_keeps_the_cutoff() {
     assert!(s.get_plane_record("call", "below").unwrap().is_none());
     assert!(s.get_plane_record("call", "at").unwrap().is_some());
     assert!(s.get_plane_record("call", "above").unwrap().is_some());
-}
-
-#[test]
-fn lookup_credential_secret_matches_the_kind_too() {
-    let s = MemoryStore::new();
-    s.put_key(&key("a")).unwrap();
-    s.put_credential(&credential("c", "a", "p")).unwrap();
-    assert!(s.lookup_credential_secret("aws", "p").unwrap().is_none());
-    assert!(s
-        .lookup_credential_secret("generic", "p")
-        .unwrap()
-        .is_some());
 }
 
 #[test]

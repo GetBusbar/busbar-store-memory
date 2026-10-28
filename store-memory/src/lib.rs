@@ -313,22 +313,6 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn scrub_key(&self, id: &str) -> StoreResult<()> {
-        let mut keys = write(&self.keys);
-        let Some(key) = keys.get_mut(id) else {
-            return Err(StoreError(format!("scrub_key: unknown key '{id}'")));
-        };
-        if key.deleted_at.is_none() {
-            return Err(StoreError(format!(
-                "scrub_key: '{id}' is not tombstoned — delete it first"
-            )));
-        }
-        key.name.clear();
-        key.labels.clear();
-        key.revision = self.next_revision();
-        Ok(())
-    }
-
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(read(&self.keys)
             .values()
@@ -342,14 +326,6 @@ impl Store for MemoryStore {
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
-    }
-
-    /// The token ledger's retention sweep and nothing else.
-    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
-        let mut usage = write(&self.usage);
-        let held = usage.len();
-        usage.retain(|(_, window_start), _| *window_start >= before);
-        Ok((held - usage.len()) as u64)
     }
 
     fn put_usage(
@@ -513,17 +489,6 @@ impl Store for MemoryStore {
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
             .collect())
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> StoreResult<Option<CredentialSecret>> {
-        Ok(read(&self.creds)
-            .values()
-            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
-            .cloned())
     }
 
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
@@ -720,20 +685,6 @@ impl Store for MemoryStore {
         Ok(read(&self.plane_records)
             .get(&(kind.to_string(), token.to_string(), 0))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
-    }
-
-    /// Remove every metering row of `bucket`. The trait spells the bucket as a string; one that is
-    /// not an integer is REFUSED (postgres's wording), not treated as empty.
-    fn purge_metering_before(&self, bucket: &str) -> StoreResult<u64> {
-        let bucket: u64 = bucket.parse().map_err(|_| {
-            StoreError(format!(
-                "purge_metering_before: invalid bucket {bucket:?}, expected an integer"
-            ))
-        })?;
-        let mut m = write(&self.metering);
-        let before = m.len();
-        m.retain(|(_, b, _, _, _), _| *b != bucket);
-        Ok((before - m.len()) as u64)
     }
 }
 
