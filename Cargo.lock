@@ -43,7 +43,7 @@ dependencies = [
 [[package]]
 name = "busbar-contract"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=41ac00ab4b8460cdb2b881d38ab181d6bb662188#41ac00ab4b8460cdb2b881d38ab181d6bb662188"
+source = "git+https://github.com/GetBusbar/busbar?rev=1f834fcaf3f3e3cddd73749b9776c8814fab189b#1f834fcaf3f3e3cddd73749b9776c8814fab189b"
 dependencies = [
  "async-trait",
  "base64",
@@ -67,7 +67,7 @@ dependencies = [
 [[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=41ac00ab4b8460cdb2b881d38ab181d6bb662188#41ac00ab4b8460cdb2b881d38ab181d6bb662188"
+source = "git+https://github.com/GetBusbar/busbar?rev=1f834fcaf3f3e3cddd73749b9776c8814fab189b#1f834fcaf3f3e3cddd73749b9776c8814fab189b"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
