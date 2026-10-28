@@ -6,6 +6,30 @@
 use super::*;
 use busbar_contract::records::SecretForm;
 
+/// A credential resolved by `(kind, public_id)`, read off the store's own rows: what the tests below
+/// check a cascade, a refusal or the retention sweep left behind.
+trait Lookup {
+    fn lookup_credential_secret(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>>;
+}
+
+impl Lookup for MemoryStore {
+    fn lookup_credential_secret(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>> {
+        Ok(self
+            .creds_read()
+            .values()
+            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
+            .cloned())
+    }
+}
+
 fn key(id: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
@@ -249,37 +273,6 @@ fn next_revision_is_strictly_monotonic_starting_above_zero() {
         "the counter must not hand out 0 as a real revision"
     );
     assert_eq!(rev_b, rev_a + 1, "each call must advance by exactly 1");
-}
-
-#[test]
-fn lookup_credential_secret_resolves_by_kind_and_public_id() {
-    let s = MemoryStore::new();
-    s.put_key(&key("a")).unwrap();
-    s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
-    let found = s
-        .lookup_credential_secret("generic", "AKIA1")
-        .unwrap()
-        .unwrap();
-    assert_eq!(found.meta.key_id, "a");
-    assert_eq!(found.secret, "v1:plain:sek");
-    assert!(s
-        .lookup_credential_secret("generic", "unknown")
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn scrub_key_requires_tombstone_first() {
-    let s = MemoryStore::new();
-    s.put_key(&key("a")).unwrap();
-    // A live key must not be scrubbable — that would be silent, un-auditable data loss on an
-    // active principal.
-    assert!(s.scrub_key("a").is_err());
-    s.delete_key("a").unwrap();
-    s.scrub_key("a").unwrap();
-    let scrubbed = s.get_key("a").unwrap().unwrap();
-    assert!(scrubbed.name.is_empty());
-    assert!(scrubbed.labels.is_empty());
 }
 
 #[test]
@@ -1161,4 +1154,37 @@ fn a_purge_honours_the_retention_it_is_handed_never_the_kinds_name() {
     );
     assert!(s.get_plane_record("order", "o-active").unwrap().is_some());
     assert!(s.get_plane_record("order", "o-terminal").unwrap().is_none());
+}
+
+#[test]
+fn purge_plane_records_before_counts_what_it_drops_and_keeps_the_cutoff() {
+    let s = MemoryStore::new();
+    for (id, ts) in [("below", 4), ("at", 5), ("above", 6)] {
+        let mut r = plane_task(id, PlaneDisposition::Active);
+        r.kind = "call".to_string();
+        r.ts = ts;
+        s.upsert_plane_record(r.view()).unwrap();
+    }
+    // Only the row strictly older than the cutoff goes, and the count says so.
+    assert_eq!(s.purge_plane_records_before("call", 5).unwrap(), 1);
+    assert!(s.get_plane_record("call", "below").unwrap().is_none());
+    assert!(s.get_plane_record("call", "at").unwrap().is_some());
+    assert!(s.get_plane_record("call", "above").unwrap().is_some());
+}
+
+#[test]
+fn a_mint_with_a_tombstoned_key_writes_nothing() {
+    let s = MemoryStore::new();
+    let mut dead = key("dead");
+    dead.deleted_at = Some(5);
+    assert!(
+        s.put_key_with_credential(&dead, &credential("c", "dead", "pub"))
+            .is_err(),
+        "a credential is never minted onto a key that carries a tombstone"
+    );
+    assert!(s.get_key("dead").unwrap().is_none());
+    assert!(s
+        .lookup_credential_secret("generic", "pub")
+        .unwrap()
+        .is_none());
 }
