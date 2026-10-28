@@ -21,7 +21,6 @@ fn settings_accept_empty_whitespace_null_and_empty_object() {
             .is_ok(),
             "{ok:?}"
         );
-        assert!(busbar_store_memory::open(ok).is_ok(), "{ok:?}");
     }
 }
 
@@ -40,8 +39,6 @@ fn settings_refuse_malformed_json_and_any_key() {
         <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(b"{\"x\": 1}", None)
             .is_err()
     );
-    assert!(busbar_store_memory::open("{\"x\": 1}").is_err());
-    assert!(busbar_store_memory::open("{oops").is_err());
     let e = <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(b"[1]")
         .unwrap_err();
     assert!(e.starts_with("invalid memory plugin config: "), "{e}");

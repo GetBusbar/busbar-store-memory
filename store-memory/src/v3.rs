@@ -25,7 +25,7 @@ use busbar_contract::records::{
     PlaneSelector, RecordStore, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
-use crate::MemoryStore;
+use crate::{read, write, MemoryStore};
 
 busbar_contract::store_door!(MemoryStore, "memory", env!("CARGO_PKG_VERSION"), 1024);
 
@@ -191,7 +191,13 @@ impl MemoryStore {
         // The store keeps the record, so it copies it here (the door lends the host's bytes).
         let value = RecordBytes::new(value.to_vec())
             .map_err(|n| format!("a record of {n} bytes is over the ceiling"))?;
-        self.record_put_at(schema, key, &value);
+        let mut records = write(&self.records);
+        let at = (schema.to_string(), key.to_vec());
+        if value.as_slice().is_empty() {
+            records.remove(&at);
+        } else {
+            records.insert(at, value);
+        }
         Ok(())
     }
 
@@ -200,7 +206,9 @@ impl MemoryStore {
         schema: &str,
         key: &[u8],
     ) -> Result<Option<RecordBytes>, String> {
-        Ok(self.record_get_at(schema, key))
+        Ok(read(&self.records)
+            .get(&(schema.to_string(), key.to_vec()))
+            .cloned())
     }
 
     pub(crate) fn v3_record_scan(
@@ -209,7 +217,14 @@ impl MemoryStore {
         prefix: &[u8],
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String> {
-        Ok(self.record_scan_at(schema, prefix, limit))
+        // Seek to the first key at or after `(schema, prefix)` and stop at the first past the prefix.
+        let from = (schema.to_string(), prefix.to_vec());
+        Ok(read(&self.records)
+            .range(from..)
+            .take_while(|((s, k), _)| s == schema && k.starts_with(prefix))
+            .take(limit as usize)
+            .map(|((_, k), value)| (k.clone(), value.clone()))
+            .collect())
     }
 
     pub(crate) fn v3_add_usage_batch(

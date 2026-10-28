@@ -1083,15 +1083,14 @@ fn a_record_blob_comes_back_byte_exact() {
 #[test]
 fn a_record_scan_seeks_its_schema_and_prefix() {
     let s = MemoryStore::new();
-    let body = RecordBytes::new(vec![1]).expect("record");
     for i in 0u32..200_000 {
-        s.record_put_at("z.other", &i.to_be_bytes(), &body);
+        s.v3_record_put("z.other", &i.to_be_bytes(), &[1]).unwrap();
     }
-    s.record_put_at("a.mine", b"k1", &body);
-    s.record_put_at("a.mine", b"x1", &body);
+    s.v3_record_put("a.mine", b"k1", &[1]).unwrap();
+    s.v3_record_put("a.mine", b"x1", &[1]).unwrap();
     let started = std::time::Instant::now();
     for _ in 0..20_000 {
-        let rows = s.record_scan_at("a.mine", b"k", u32::MAX);
+        let rows = s.v3_record_scan("a.mine", b"k", u32::MAX).unwrap();
         assert_eq!(rows.len(), 1);
     }
     let took = started.elapsed();
@@ -1100,16 +1099,17 @@ fn a_record_scan_seeks_its_schema_and_prefix() {
         "20000 scans of a one-row prefix took {took:?}"
     );
     // The seek answers exactly what the walk did, in key order, within the limit.
-    s.record_put_at("a.mine", b"k0", &body);
+    s.v3_record_put("a.mine", b"k0", &[1]).unwrap();
     let keys: Vec<Vec<u8>> = s
-        .record_scan_at("a.mine", b"k", 10)
+        .v3_record_scan("a.mine", b"k", 10)
+        .unwrap()
         .into_iter()
         .map(|(k, _)| k)
         .collect();
     assert_eq!(keys, vec![b"k0".to_vec(), b"k1".to_vec()]);
-    assert_eq!(s.record_scan_at("a.mine", b"", 2).len(), 2);
-    assert_eq!(s.record_scan_at("a.mine", b"k", 0).len(), 0);
-    assert_eq!(s.record_scan_at("a.min", b"", 10).len(), 0);
+    assert_eq!(s.v3_record_scan("a.mine", b"", 2).unwrap().len(), 2);
+    assert_eq!(s.v3_record_scan("a.mine", b"k", 0).unwrap().len(), 0);
+    assert_eq!(s.v3_record_scan("a.min", b"", 10).unwrap().len(), 0);
 }
 
 /// THE PURGE HONOURS THE RETENTION RULE IT IS HANDED (coordinator ruling (b)), never one inferred
