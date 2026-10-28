@@ -43,7 +43,21 @@ use busbar_contract::records::{
 
 use crate::MemoryStore;
 
-busbar_contract::store_door!(MemoryStore, "memory", env!("CARGO_PKG_VERSION"), 1024);
+/// The settings paths this store declares may hold a secret reference: `*`, every top-level key.
+/// busbar 1.5.5 resolved a reference at any top-level store setting and, when one did not resolve,
+/// warned and booted this store (which reads no settings); busbar now resolves one only where the
+/// Statement declares it, refusing it anywhere else, so declaring every key keeps each 1.5.5 config
+/// booting as it did.
+const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
+    &[busbar_contract::abi::sdk::door::abi_str("*")];
+
+busbar_contract::store_door!(
+    MemoryStore,
+    "memory",
+    env!("CARGO_PKG_VERSION"),
+    1024,
+    secret_refs: SECRET_REFS
+);
 
 /// A slot key owned by the store: `(bucket, pool, dimension, class_key, window_start)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
