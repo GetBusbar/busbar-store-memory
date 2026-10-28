@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "busbar-store-memory"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "busbar-store-memory-plugin"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-plugin-loader",
