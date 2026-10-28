@@ -43,13 +43,13 @@ use busbar_contract::records::{
 
 use crate::MemoryStore;
 
-/// The settings paths this store declares may hold a secret reference: `*`, every top-level key.
-/// busbar 1.5.5 resolved a reference at any top-level store setting and, when one did not resolve,
-/// warned and booted this store (which reads no settings); busbar now resolves one only where the
-/// Statement declares it, refusing it anywhere else, so declaring every key keeps each 1.5.5 config
-/// booting as it did.
+/// The settings paths this store declares may hold a secret reference (`secret_refs`): `token`. The
+/// store reads no settings; `token` is the key a 1.5.5 store config held a reference at (busbar oracle
+/// BOOT-W15: an unresolved reference there warns and boots). busbar resolves a reference only where
+/// the Statement declares one and refuses it anywhere else (G14: each plugin declares its secret
+/// fields), so the store names its field rather than `*`.
 const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
-    &[busbar_contract::abi::sdk::door::abi_str("*")];
+    &[busbar_contract::abi::sdk::door::abi_str("token")];
 
 busbar_contract::store_door!(
     MemoryStore,
