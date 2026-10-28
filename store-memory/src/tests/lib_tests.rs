@@ -22,8 +22,7 @@ impl Lookup for MemoryStore {
         kind: &str,
         public_id: &str,
     ) -> StoreResult<Option<CredentialSecret>> {
-        Ok(self
-            .creds_read()
+        Ok(read(&self.creds)
             .values()
             .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
             .cloned())

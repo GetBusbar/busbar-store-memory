@@ -108,30 +108,6 @@ mod conf {
         (old_ts, new_ts)
     }
 
-    /// Every `VirtualKey` id the suite writes under `ns`. A shared-database backend must delete these
-    /// (and their credential rows) before calling, and should clean them up afterwards.
-    pub fn key_ids(ns: &str) -> Vec<String> {
-        vec![
-            format!("{ns}_resurrect"),
-            format!("{ns}_deltwice"),
-            format!("{ns}_credowner"),
-            format!("{ns}_deadowner"),
-            format!("{ns}_mintowner"),
-            format!("{ns}_minted"),
-        ]
-    }
-
-    /// Every credential id the suite writes under `ns`. See [`key_ids`].
-    pub fn credential_ids(ns: &str) -> Vec<String> {
-        vec![
-            format!("{ns}_cred"),
-            format!("{ns}_orphan"),
-            format!("{ns}_deadcred"),
-            format!("{ns}_mintcred"),
-            format!("{ns}_mintdupe"),
-        ]
-    }
-
     /// A minimal live key. `id` names the row; every other field is a don't-care the checks never read.
     pub fn live_key(id: &str) -> VirtualKey {
         VirtualKey {
