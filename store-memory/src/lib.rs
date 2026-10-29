@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+use busbar_contract::abi::sdk::store::fork;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
 use busbar_contract::records::{
@@ -506,10 +507,7 @@ impl Store for MemoryStore {
         let mut audit = write(&self.audit);
         match audit.get(&entry.seq) {
             Some(stored) if stored == entry => Ok(()),
-            Some(_) => Err(StoreError(format!(
-                "append_audit: seq {} already holds a DIFFERENT record — the audit chain has forked",
-                entry.seq
-            ))),
+            Some(_) => Err(fork::audit_fork(entry.seq)),
             None => {
                 audit.insert(entry.seq, entry.clone());
                 Ok(())
@@ -539,13 +537,11 @@ impl Store for MemoryStore {
         let key = Self::chain_key(record);
         match records.get(&key) {
             Some(existing) if existing.view() == record => Ok(()),
-            Some(_) => Err(StoreError(format!(
-                "append_plane_record: kind '{}' parent '{}' seq {} already holds a DIFFERENT \
-                 record — the chain has forked",
+            Some(_) => Err(fork::chain_fork(
                 record.kind,
                 record.parent.unwrap_or(record.id),
-                record.seq
-            ))),
+                record.seq,
+            )),
             None => {
                 records.insert(key, record.to_record());
                 Ok(())
