@@ -70,3 +70,12 @@ fn settings_accept_and_ignore_a_token() {
     .unwrap_err();
     assert!(e.contains("unknown setting `x`"), "{e}");
 }
+
+/// The non-object refusal names the JSON type, never the value (it may be a mis-nested secret).
+#[test]
+fn a_non_object_refusal_does_not_echo_the_value() {
+    let e = <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(b"\"s3cr3t\"")
+        .unwrap_err();
+    assert!(e.starts_with("invalid memory plugin config: "), "{e}");
+    assert!(!e.contains("s3cr3t"), "{e}");
+}
