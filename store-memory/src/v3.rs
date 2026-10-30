@@ -5,18 +5,16 @@
 //! `op_id`-carrying count batches, plane records and the kernel-held records. It holds no money:
 //! money is counts x the rate card, derived in busbar's core.
 //!
-//! DEDUPE (`abi::store` S1-S4): every `op_id` this store APPLIED is remembered, with a SHA-256
-//! digest of the op's value fields and its answer, for [`OP_ID_RETENTION_SECS`]. A replay with the
-//! same value fields applies nothing and answers the original; different value fields are a
-//! conflict. The dedupe log lives under ONE lock, and an op's check, effect and record happen
-//! under it, so two racing calls with one `op_id` apply once. The log is lost on restart together
-//! with everything it guards.
+//! DEDUPE (`abi::store` S1-S4, [`Dedupe`]): every `op_id` this store APPLIED is remembered with
+//! its [`Body`] for [`OP_ID_RETENTION_SECS`]. The dedupe log lives under ONE lock, and an op's
+//! check, effect and record happen under it, so two racing calls with one `op_id` apply once. The
+//! log is lost on restart together with everything it guards.
 
 use std::collections::{HashMap, VecDeque};
-use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
 use busbar_contract::abi::sdk::conn::Host;
+use busbar_contract::abi::sdk::store::dedupe::{Body, Dedupe};
 use busbar_contract::abi::sdk::store::{Op, OpRefused, OpResult, Scanned, Step, StoreSlots, Tail};
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
@@ -43,42 +41,9 @@ busbar_contract::store_door!(
     secret_refs: SECRET_REFS
 );
 
-/// What an applied op answered, replayed verbatim.
-#[derive(Debug, Clone)]
-enum Answer {
-    Done,
-}
-
-/// The SHA-256 digest of an op's value fields, as their text renders them.
-type Body = [u8; 32];
-
-/// A [`std::fmt::Write`] that feeds what is written into a digest, so the text is never held.
-struct Feed(sha2::Sha256);
-
-impl std::fmt::Write for Feed {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        sha2::Digest::update(&mut self.0, s.as_bytes());
-        Ok(())
-    }
-}
-
-/// The [`Body`] of the value fields `args` render.
-fn body(args: std::fmt::Arguments<'_>) -> Body {
-    let mut feed = Feed(<sha2::Sha256 as sha2::Digest>::new());
-    // Writing into a digest cannot fail.
-    let _ = feed.write_fmt(args);
-    sha2::Digest::finalize(feed.0).into()
-}
-
-/// One remembered op: the digest of its value fields and its answer.
-struct Recorded {
-    body: Body,
-    answer: Answer,
-}
-
 #[derive(Default)]
 struct Inner {
-    ops: HashMap<OpId, Recorded>,
+    ops: HashMap<OpId, Body>,
     /// `(recorded_at, op_id)`, oldest first: the retention sweep's order.
     aged: VecDeque<(u64, OpId)>,
 }
@@ -89,24 +54,9 @@ pub(crate) struct State {
     inner: Mutex<Inner>,
 }
 
-/// Whether an op is new, a replay, or a conflict.
-enum Seen {
-    New,
-    Replay(Answer),
-    Conflict,
-}
-
 impl Inner {
-    fn seen(&self, op: OpId, body: &Body) -> Seen {
-        match self.ops.get(&op) {
-            None => Seen::New,
-            Some(r) if r.body == *body => Seen::Replay(r.answer.clone()),
-            Some(_) => Seen::Conflict,
-        }
-    }
-
     /// Remember an APPLIED op, and forget every op past its retention.
-    fn record(&mut self, now: u64, op: OpId, body: Body, answer: Answer) {
+    fn record(&mut self, now: u64, op: OpId, body: Body) {
         while let Some(&(at, old)) = self.aged.front() {
             if at.saturating_add(OP_ID_RETENTION_SECS) > now {
                 break;
@@ -114,7 +64,7 @@ impl Inner {
             self.aged.pop_front();
             self.ops.remove(&old);
         }
-        self.ops.insert(op, Recorded { body, answer });
+        self.ops.insert(op, body);
         self.aged.push_back((now, op));
     }
 }
@@ -139,7 +89,7 @@ impl State {
     pub(crate) fn held(&self) -> Held {
         let inner = self.lock();
         Held {
-            op_bytes: inner.ops.values().map(|r| r.body.len()).sum(),
+            op_bytes: inner.ops.values().map(|b| b.len()).sum(),
         }
     }
 }
@@ -149,38 +99,23 @@ fn failed(e: busbar_contract::records::RecordStoreError) -> OpRefused {
 }
 
 impl MemoryStore {
-    /// Run one `op_id`-carrying write under the v3 lock: a replay answers the original, a
-    /// conflict applies nothing, and a new op runs `apply` and is remembered only if it applied.
+    /// Run one `op_id`-carrying write [`Dedupe::run`] under the v3 lock; a new op is remembered
+    /// only if it applied.
     fn deduped(
         &self,
         op: OpId,
-        body: Body,
-        apply: impl FnOnce(&Self, &mut Inner) -> OpResult<Answer>,
-    ) -> OpResult<Answer> {
-        let mut inner = self.v3.lock();
-        match inner.seen(op, &body) {
-            Seen::Replay(a) => Ok(a),
-            Seen::Conflict => Err(OpRefused::Conflict),
-            Seen::New => {
-                let answer = apply(self, &mut inner)?;
-                inner.record(self.now(), op, body, answer.clone());
-                Ok(answer)
-            }
-        }
-    }
-
-    /// [`Self::deduped`] for an op whose answer is just `Done`.
-    fn applied(
-        &self,
-        op: OpId,
-        body: Body,
+        d: Dedupe<'_>,
         apply: impl FnOnce(&Self) -> RecordStoreResult<()>,
     ) -> OpResult<()> {
-        self.deduped(op, body, |s, _| {
-            apply(s).map_err(failed)?;
-            Ok(Answer::Done)
-        })
-        .map(drop)
+        d.run(
+            &mut *self.v3.lock(),
+            |i| Ok(i.ops.get(&op).copied()),
+            |i, body| {
+                apply(self).map_err(failed)?;
+                i.record(self.now(), op, *body);
+                Ok(())
+            },
+        )
     }
 }
 
@@ -192,8 +127,9 @@ impl MemoryStore {
         op: OpId,
         record: PlaneRecordRef<'_>,
     ) -> OpResult<()> {
-        let body = body(format_args!("append_plane_record:{:?}", record.to_record()));
-        self.applied(op, body, |s| s.append_plane_record(record))
+        self.deduped(op, Dedupe::append(record), |s| {
+            s.append_plane_record(record)
+        })
     }
 
     pub(crate) fn v3_record_put(
@@ -246,9 +182,8 @@ impl MemoryStore {
         op: OpId,
         cells: &[(&str, u64, UsageDelta)],
     ) -> OpResult<()> {
-        let body = body(format_args!("add_usage_batch:{cells:?}"));
         // A RAM ledger cannot fail an add, so applying in order is atomic.
-        self.applied(op, body, |s| {
+        self.deduped(op, Dedupe::usage(cells), |s| {
             cells
                 .iter()
                 .try_for_each(|(bucket, window, delta)| s.add_usage(bucket, *window, delta))
@@ -256,8 +191,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
-        let body = body(format_args!("add_metering_batch:{deltas:?}"));
-        self.applied(op, body, |s| {
+        self.deduped(op, Dedupe::metering(deltas), |s| {
             deltas.iter().try_for_each(|d| s.add_metering(d))
         })
     }
