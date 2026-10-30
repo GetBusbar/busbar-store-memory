@@ -202,3 +202,32 @@ fn a_plane_append_replays_once_and_a_reused_op_id_conflicts() {
         .expect("list");
     assert_eq!(rows, vec![b"a".to_vec()]);
 }
+
+/// A NEW op_id whose append forks an occupied `(parent, seq)` answers `Failed` and records
+/// nothing: the same op_id retried with a non-forking record applies (not Replay/Conflict).
+#[test]
+fn a_failed_append_does_not_record_its_op_id() {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
+    let s = MemoryStore::new();
+    let event = |seq: u64, body: &[u8]| PlaneRecord {
+        kind: "task_event".to_string(),
+        id: "t1".to_string(),
+        parent: Some("t1".to_string()),
+        seq,
+        ts: 0,
+        disposition: PlaneDisposition::Active,
+        body: body.to_vec(),
+    };
+    s.v3_append_plane_record_op(op(1), event(1, b"a").view())
+        .expect("first");
+    assert!(matches!(
+        s.v3_append_plane_record_op(op(2), event(1, b"fork").view()),
+        Err(OpRefused::Failed(_))
+    ));
+    s.v3_append_plane_record_op(op(2), event(2, b"b").view())
+        .expect("the retry applies: the failed op was never recorded");
+    let rows = s
+        .list_plane_records("task_event", &PlaneSelector::All)
+        .expect("list");
+    assert_eq!(rows, vec![b"a".to_vec(), b"b".to_vec()]);
+}
