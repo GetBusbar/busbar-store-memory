@@ -1260,3 +1260,29 @@ fn an_upsert_ignores_the_records_seq() {
         vec![b"two".to_vec()]
     );
 }
+
+/// Equal-`seq` rows list in one stable order (by id), whatever the map's iteration order is.
+#[test]
+fn list_plane_records_orders_equal_seqs_by_id() {
+    let ids: Vec<String> = (0..16).map(|i| format!("id-{i:02}")).collect();
+    let expected: Vec<Vec<u8>> = ids.iter().map(|i| i.as_bytes().to_vec()).collect();
+    for _ in 0..4 {
+        let s = MemoryStore::new();
+        for id in ids.iter().rev() {
+            let r = PlaneRecord {
+                kind: "k".to_string(),
+                id: id.clone(),
+                parent: None,
+                seq: 0,
+                ts: 0,
+                disposition: PlaneDisposition::Active,
+                body: id.as_bytes().to_vec(),
+            };
+            s.upsert_plane_record(r.view()).unwrap();
+        }
+        assert_eq!(
+            s.list_plane_records("k", &PlaneSelector::All).unwrap(),
+            expected
+        );
+    }
+}
