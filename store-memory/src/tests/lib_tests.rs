@@ -1233,3 +1233,30 @@ fn a_parented_upserted_record_reads_back_by_its_own_id() {
         Some(b"two".to_vec())
     );
 }
+
+/// Upsert is by `(kind, id)` whatever `seq` the record carries: it reads back by id, and a second
+/// upsert with another `seq` replaces it rather than adding a row.
+#[test]
+fn an_upsert_ignores_the_records_seq() {
+    let s = MemoryStore::new();
+    let rec = |seq: u64, body: &[u8]| PlaneRecord {
+        kind: "k".to_string(),
+        id: "x".to_string(),
+        parent: None,
+        seq,
+        ts: 0,
+        disposition: PlaneDisposition::Active,
+        body: body.to_vec(),
+    };
+    s.upsert_plane_record(rec(5, b"one").view()).unwrap();
+    assert_eq!(
+        s.get_plane_record("k", "x").unwrap(),
+        Some(b"one".to_vec()),
+        "an upsert at seq 5 is not reachable by (kind, id)"
+    );
+    s.upsert_plane_record(rec(7, b"two").view()).unwrap();
+    assert_eq!(
+        s.list_plane_records("k", &PlaneSelector::All).unwrap(),
+        vec![b"two".to_vec()]
+    );
+}
