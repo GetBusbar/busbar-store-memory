@@ -1286,3 +1286,74 @@ fn list_plane_records_orders_equal_seqs_by_id() {
         );
     }
 }
+
+/// The atomic mint refuses, and writes nothing, when the stored row under the key's id is a
+/// tombstone (even though the key it is handed is live) and when the credential names another key.
+#[test]
+fn put_key_with_credential_refusals_write_nothing() {
+    let s = MemoryStore::new();
+    s.put_key(&key("dead")).unwrap();
+    s.delete_key("dead").unwrap();
+    let tombstone = s.get_key("dead").unwrap().unwrap();
+    assert!(s
+        .put_key_with_credential(&key("dead"), &credential("c", "dead", "pub"))
+        .is_err());
+    assert_eq!(s.get_key("dead").unwrap(), Some(tombstone));
+    assert!(s
+        .lookup_credential_secret("generic", "pub")
+        .unwrap()
+        .is_none());
+
+    assert!(s
+        .put_key_with_credential(&key("k2"), &credential("c2", "other", "pub2"))
+        .is_err());
+    assert!(s.get_key("k2").unwrap().is_none());
+    assert!(s
+        .lookup_credential_secret("generic", "pub2")
+        .unwrap()
+        .is_none());
+}
+
+/// `revoke_credential` bumps the credential's revision once (visible to `list_credentials_since`);
+/// a repeat keeps the first `revoked_at` and reason and does not bump again.
+#[test]
+fn revoke_credential_bumps_the_revision_once() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c", "k", "P")).unwrap();
+    let minted = s.list_credentials("k").unwrap()[0].revision;
+
+    s.pin_clock(1_000);
+    s.revoke_credential("c", "first").unwrap();
+    let after = s.list_credentials_since(minted).unwrap();
+    assert_eq!(after.len(), 1);
+    let revoked = after[0].meta.clone();
+    assert!(revoked.revision > minted);
+    assert_eq!(revoked.revoked_at, Some(1_000));
+
+    s.pin_clock(2_000);
+    s.revoke_credential("c", "second").unwrap();
+    assert_eq!(s.list_credentials("k").unwrap(), vec![revoked.clone()]);
+    assert!(s
+        .list_credentials_since(revoked.revision)
+        .unwrap()
+        .is_empty());
+}
+
+/// `delete_key` bumps the key's revision (visible to `list_keys_since`); the idempotent second
+/// delete does not.
+#[test]
+fn delete_key_bumps_the_revision_once() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    let live = s.get_key("k").unwrap().unwrap().revision;
+    s.delete_key("k").unwrap();
+    let since = s.list_keys_since(live).unwrap();
+    assert_eq!(since.len(), 1);
+    assert!(since[0].deleted_at.is_some());
+    let tomb = since[0].revision;
+    assert!(tomb > live);
+    s.delete_key("k").unwrap();
+    assert!(s.list_keys_since(tomb).unwrap().is_empty());
+    assert_eq!(s.get_key("k").unwrap().unwrap().revision, tomb);
+}
