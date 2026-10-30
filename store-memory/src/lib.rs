@@ -327,8 +327,10 @@ impl Store for MemoryStore {
         // Only this hot path sweeps; `put_usage` (absolute set) does not.
         if sweep_due(&self.usage_sweep_ticker) {
             let n = self.now();
-            usage
-                .retain(|(_, window_start), _| window_start.saturating_add(MAX_RETENTION_SECS) > n);
+            // Window 0 is the all-time ledger, never aged.
+            usage.retain(|(_, window_start), _| {
+                *window_start == 0 || window_start.saturating_add(MAX_RETENTION_SECS) > n
+            });
         }
         Ok(())
     }
