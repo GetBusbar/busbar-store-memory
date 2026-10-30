@@ -649,7 +649,9 @@ fn a_parked_listing_read_does_not_block_a_concurrent_point_read() {
     let reader = std::sync::Arc::clone(&store);
     let handle = std::thread::spawn(move || {
         let found = reader.get_key("k1").expect("point read").is_some();
-        let _ = tx.send(found);
+        // A second listing is another shared read, so it must not wait either.
+        let listed = reader.list_keys().expect("second listing").len() == 1;
+        let _ = tx.send(found && listed);
     });
 
     let answered = rx
@@ -659,8 +661,8 @@ fn a_parked_listing_read_does_not_block_a_concurrent_point_read() {
     handle.join().expect("the point read thread");
     assert!(
         answered,
-        "a concurrent get_key did not complete while a listing read was in flight — the point \
-         read is serialized behind the whole listing pass"
+        "a concurrent get_key or list_keys did not complete while a listing read was in flight — \
+         a read is serialized behind the whole listing pass"
     );
 }
 
