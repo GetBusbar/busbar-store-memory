@@ -43,3 +43,30 @@ fn settings_refuse_malformed_json_and_any_key() {
         .unwrap_err();
     assert!(e.starts_with("invalid memory plugin config: "), "{e}");
 }
+
+/// A 1.5.5 memory config carried `token` (the door declares it in `secret_refs`): accepted, any
+/// JSON value, and ignored. Every other key stays refused.
+#[test]
+fn settings_accept_and_ignore_a_token() {
+    for ok in [
+        r#"{"token":"x"}"#,
+        r#"{"token":{"env":"X"}}"#,
+        r#"{"token":null}"#,
+    ] {
+        assert_eq!(
+            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(ok.as_bytes()),
+            Ok(()),
+            "{ok}"
+        );
+        assert!(
+            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(ok.as_bytes(), None)
+                .is_ok(),
+            "{ok}"
+        );
+    }
+    let e = <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(
+        br#"{"token":"x","x":1}"#,
+    )
+    .unwrap_err();
+    assert!(e.contains("unknown setting `x`"), "{e}");
+}
