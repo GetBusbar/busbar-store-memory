@@ -44,6 +44,9 @@ type MeteringKey = (String, u64, String, String, u64);
 /// A plane record's key: `(kind, identity, seq)`.
 type PlaneKey = (String, String, u64);
 
+/// The `seq` an upserted plane record is stored at (it is keyed by `(kind, id)`).
+const UPSERT_SEQ: u64 = 0;
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -97,8 +100,6 @@ pub struct MemoryStore {
     /// Write counters driving each map's amortized sweep (`records` has none: never aged out).
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
-    keys_sweep_ticker: AtomicU64,
-    creds_sweep_ticker: AtomicU64,
     tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`), bumped on every
     /// `keys`/`creds` mutation.
@@ -186,7 +187,7 @@ impl MemoryStore {
     /// An UPSERTED record's key in the one map: its own `id`, parent or not (the contract upserts
     /// by `(kind, id)`), so `get_plane_record`/`delete_plane_record` reach it by that id.
     fn upsert_key(record: PlaneRecordRef<'_>) -> PlaneKey {
-        (record.kind.to_string(), record.id.to_string(), record.seq)
+        (record.kind.to_string(), record.id.to_string(), UPSERT_SEQ)
     }
 
     /// The two credential-table preconditions, shared by `put_credential` and the atomic
@@ -212,8 +213,14 @@ impl MemoryStore {
             )));
         }
         // UNIQUE(kind, public_id), even across keys: a public_id is a global lookup handle.
+        // A revoked row in this mint's own slot is replaced by it, so it holds no clash.
         let public_id_taken = creds.values().any(|c| {
-            c.meta.id != meta.id && c.meta.kind == meta.kind && c.meta.public_id == meta.public_id
+            c.meta.id != meta.id
+                && c.meta.kind == meta.kind
+                && c.meta.public_id == meta.public_id
+                && !(c.meta.key_id == meta.key_id
+                    && c.meta.slot == meta.slot
+                    && c.meta.revoked_at.is_some())
         });
         if public_id_taken {
             return Err(StoreError(format!(
@@ -222,6 +229,19 @@ impl MemoryStore {
             )));
         }
         Ok(())
+    }
+
+    /// Insert `secret`, replacing a REVOKED row in the same `(key_id, kind, slot)` (the contract
+    /// upserts on that triple; a live occupant was refused by the preconditions).
+    fn insert_credential(creds: &mut HashMap<String, CredentialSecret>, secret: CredentialSecret) {
+        let meta = &secret.meta;
+        creds.retain(|_, c| {
+            !(c.meta.id != meta.id
+                && c.meta.key_id == meta.key_id
+                && c.meta.kind == meta.kind
+                && c.meta.slot == meta.slot)
+        });
+        creds.insert(secret.meta.id.clone(), secret);
     }
 
     /// Test-only: pin `self.now()` to `t`.
@@ -246,15 +266,6 @@ impl Store for MemoryStore {
         }
         key.revision = self.next_revision();
         keys.insert(key.id.clone(), key);
-
-        // Stale tombstones go in an amortized sweep; a live row is never pruned.
-        if sweep_due(&self.keys_sweep_ticker) {
-            let n = self.now();
-            keys.retain(|_, k| match k.deleted_at {
-                None => true,
-                Some(deleted_at) => deleted_at.saturating_add(MAX_RETENTION_SECS) > n,
-            });
-        }
         Ok(())
     }
 
@@ -327,8 +338,10 @@ impl Store for MemoryStore {
         // Only this hot path sweeps; `put_usage` (absolute set) does not.
         if sweep_due(&self.usage_sweep_ticker) {
             let n = self.now();
-            usage
-                .retain(|(_, window_start), _| window_start.saturating_add(MAX_RETENTION_SECS) > n);
+            // Window 0 is the all-time ledger, never aged.
+            usage.retain(|(_, window_start), _| {
+                *window_start == 0 || window_start.saturating_add(MAX_RETENTION_SECS) > n
+            });
         }
         Ok(())
     }
@@ -408,17 +421,7 @@ impl Store for MemoryStore {
         Self::credential_preconditions(&creds, secret)?;
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
-        creds.insert(secret.meta.id.clone(), secret);
-
-        // Revoked credentials go in an amortized sweep, aged from `revoked_at`; a live credential
-        // is never pruned.
-        if sweep_due(&self.creds_sweep_ticker) {
-            let n = self.now();
-            creds.retain(|_, c| match c.meta.revoked_at {
-                None => true,
-                Some(revoked_at) => revoked_at.saturating_add(MAX_RETENTION_SECS) > n,
-            });
-        }
+        Self::insert_credential(&mut creds, secret);
         Ok(())
     }
 
@@ -458,7 +461,7 @@ impl Store for MemoryStore {
         keys.insert(key.id.clone(), key);
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
-        creds.insert(secret.meta.id.clone(), secret);
+        Self::insert_credential(&mut creds, secret);
         Ok(())
     }
 
@@ -475,7 +478,7 @@ impl Store for MemoryStore {
         let Some(c) = creds.get_mut(id) else {
             return Err(StoreError(format!("revoke_credential: unknown id '{id}'")));
         };
-        // Idempotent. Stamped from `self.now()`, the clock the creds sweep ages against.
+        // Idempotent: a repeat keeps the first `revoked_at` and reason.
         if c.meta.revoked_at.is_none() {
             c.meta.revoked_at = Some(self.now());
             c.meta.revoke_reason = Some(reason.to_string());
@@ -526,7 +529,7 @@ impl Store for MemoryStore {
 
     fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
         Ok(read(&self.plane_records)
-            .get(&(kind.to_string(), id.to_string(), 0))
+            .get(&(kind.to_string(), id.to_string(), UPSERT_SEQ))
             .map(|r| r.body.clone()))
     }
 
@@ -555,7 +558,8 @@ impl Store for MemoryStore {
         selector: &PlaneSelector<'_>,
     ) -> StoreResult<Vec<Vec<u8>>> {
         let records = read(&self.plane_records);
-        let mut rows: Vec<(u64, Vec<u8>)> = records
+        // `seq`, then the map key: a total order, independent of the map's.
+        let mut rows: Vec<(&PlaneKey, &PlaneRecord)> = records
             .iter()
             .filter(|((k, _, _), r)| {
                 k == kind
@@ -564,10 +568,9 @@ impl Store for MemoryStore {
                         PlaneSelector::Parent(p) => r.parent.as_deref() == Some(&**p),
                     }
             })
-            .map(|(_, r)| (r.seq, r.body.clone()))
             .collect();
-        rows.sort_by_key(|(seq, _)| *seq);
-        Ok(rows.into_iter().map(|(_, body)| body).collect())
+        rows.sort_by_key(|(key, r)| (r.seq, *key));
+        Ok(rows.into_iter().map(|(_, r)| r.body.clone()).collect())
     }
 
     fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
@@ -657,13 +660,14 @@ impl Store for MemoryStore {
         now: u64,
     ) -> StoreResult<bool> {
         Ok(read(&self.plane_records)
-            .get(&(kind.to_string(), token.to_string(), 0))
+            .get(&(kind.to_string(), token.to_string(), UPSERT_SEQ))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
 }
 
 /// The memory store takes no settings: empty, whitespace, `null` and `{}` are all "none"; malformed
-/// JSON, a non-object, or any key is refused. Shared by `validate` and `open`.
+/// JSON, a non-object, or any key but `token` is refused. `token` (any value) is a 1.5.5 config
+/// key, accepted and ignored. Shared by `validate` and `open`.
 pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
     if settings.trim_ascii().is_empty() {
         return Ok(());
@@ -672,15 +676,23 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("invalid memory plugin config: {e}"))?;
     match v {
         serde_json::Value::Null => Ok(()),
-        serde_json::Value::Object(m) => match m.keys().next() {
+        serde_json::Value::Object(m) => match m.keys().find(|k| *k != "token") {
             None => Ok(()),
             Some(k) => Err(format!(
                 "invalid memory plugin config: unknown setting `{k}` (the memory store takes no settings)"
             )),
         },
-        other => Err(format!(
-            "invalid memory plugin config: expected a JSON object, got {other}"
-        )),
+        other => {
+            let got = match other {
+                serde_json::Value::Bool(_) => "a boolean",
+                serde_json::Value::Number(_) => "a number",
+                serde_json::Value::String(_) => "a string",
+                _ => "an array",
+            };
+            Err(format!(
+                "invalid memory plugin config: expected a JSON object, got {got}"
+            ))
+        }
     }
 }
 
