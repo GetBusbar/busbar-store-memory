@@ -222,6 +222,19 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Insert `secret`, replacing a REVOKED row in the same `(key_id, kind, slot)` (the contract
+    /// upserts on that triple; a live occupant was refused by the preconditions).
+    fn insert_credential(creds: &mut HashMap<String, CredentialSecret>, secret: CredentialSecret) {
+        let meta = &secret.meta;
+        creds.retain(|_, c| {
+            !(c.meta.id != meta.id
+                && c.meta.key_id == meta.key_id
+                && c.meta.kind == meta.kind
+                && c.meta.slot == meta.slot)
+        });
+        creds.insert(secret.meta.id.clone(), secret);
+    }
+
     /// Test-only: pin `self.now()` to `t`.
     #[cfg(test)]
     fn pin_clock(&self, t: u64) {
@@ -399,7 +412,7 @@ impl Store for MemoryStore {
         Self::credential_preconditions(&creds, secret)?;
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
-        creds.insert(secret.meta.id.clone(), secret);
+        Self::insert_credential(&mut creds, secret);
         Ok(())
     }
 
@@ -439,7 +452,7 @@ impl Store for MemoryStore {
         keys.insert(key.id.clone(), key);
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
-        creds.insert(secret.meta.id.clone(), secret);
+        Self::insert_credential(&mut creds, secret);
         Ok(())
     }
 
