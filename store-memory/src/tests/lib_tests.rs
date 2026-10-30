@@ -829,17 +829,15 @@ fn record_put_never_evicts_a_record_by_age() {
     let n = now();
     let forty_days_ago = n.saturating_sub(40 * 86_400);
     // An interrupted task, written 40 days ago and never rewritten since: the row that sits still
-    // the longest is exactly the one an age rule would drop.
-    s.pin_clock(forty_days_ago);
+    // the longest is exactly the one an age rule would drop. (`record_put` reads no clock; the
+    // age is in the usage window below.)
     s.record_put(SCHEMA, b"waiting-on-a-human", &body(b"input-required"))
         .unwrap();
-    // And one written exactly at the old ceiling, the boundary the age rule used to cut at.
-    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS));
     s.record_put(SCHEMA, b"at-the-old-ceiling", &body(b"working"))
         .unwrap();
 
-    // Back to "now", and far more writes than any amortized cadence in this file needs to come
-    // round (twice SWEEP_INTERVAL, so a ticker offset by the two writes above cannot dodge it).
+    // Pin the sweep's clock, and write far more than any amortized cadence in this file needs to
+    // come round (twice SWEEP_INTERVAL, so a ticker offset by the two writes above cannot dodge it).
     s.pin_clock(n);
     let usage = UsageDelta {
         requests: 1,
@@ -1083,21 +1081,29 @@ fn a_record_blob_comes_back_byte_exact() {
 /// of another take a few milliseconds with a seek and many seconds with a walk.
 #[test]
 fn a_record_scan_seeks_its_schema_and_prefix() {
+    // Time the same scans with and without 200 000 rows of another schema beside them. A seek
+    // costs the same either way (a few x for tree depth); a walk costs thousands of times more, so
+    // the ratio holds on any machine, unlike an absolute bound.
+    let time_scans = |s: &MemoryStore| {
+        let started = std::time::Instant::now();
+        for _ in 0..300 {
+            let rows = s.v3_record_scan("a.mine", b"k", u32::MAX).unwrap();
+            assert_eq!(rows.len(), 1);
+        }
+        started.elapsed()
+    };
     let s = MemoryStore::new();
+    s.v3_record_put("a.mine", b"k1", &[1]).unwrap();
+    s.v3_record_put("a.mine", b"x1", &[1]).unwrap();
+    let alone = (0..3).map(|_| time_scans(&s)).min().unwrap();
     for i in 0u32..200_000 {
         s.v3_record_put("z.other", &i.to_be_bytes(), &[1]).unwrap();
     }
-    s.v3_record_put("a.mine", b"k1", &[1]).unwrap();
-    s.v3_record_put("a.mine", b"x1", &[1]).unwrap();
-    let started = std::time::Instant::now();
-    for _ in 0..20_000 {
-        let rows = s.v3_record_scan("a.mine", b"k", u32::MAX).unwrap();
-        assert_eq!(rows.len(), 1);
-    }
-    let took = started.elapsed();
+    let beside = (0..3).map(|_| time_scans(&s)).min().unwrap();
+    let floor = std::time::Duration::from_millis(2);
     assert!(
-        took < std::time::Duration::from_secs(2),
-        "20000 scans of a one-row prefix took {took:?}"
+        beside < 100 * alone.max(floor),
+        "300 scans took {beside:?} beside 200000 other rows, {alone:?} alone"
     );
     // The seek answers exactly what the walk did, in key order, within the limit.
     s.v3_record_put("a.mine", b"k0", &[1]).unwrap();
