@@ -1357,3 +1357,96 @@ fn delete_key_bumps_the_revision_once() {
     assert!(s.list_keys_since(tomb).unwrap().is_empty());
     assert_eq!(s.get_key("k").unwrap().unwrap().revision, tomb);
 }
+
+#[test]
+fn the_denylist_round_trips_and_lists_an_id_once() {
+    let s = MemoryStore::new();
+    assert!(s.list_denylist().unwrap().is_empty());
+    s.add_denylist("sub-1", "why").unwrap();
+    s.add_denylist("sub-1", "again").unwrap();
+    s.add_denylist("sub-2", "why").unwrap();
+    let mut listed = s.list_denylist().unwrap();
+    listed.sort();
+    assert_eq!(listed, vec!["sub-1".to_string(), "sub-2".to_string()]);
+}
+
+/// A metering row's key includes `priced_from_ms` and `provider`: deltas differing only in one of
+/// them make two rows; `usage_units` accumulate per unit.
+#[test]
+fn metering_rows_split_on_priced_from_and_provider_and_sum_units() {
+    let s = MemoryStore::new();
+    let base = MeteringDelta {
+        key_id: "k".to_string(),
+        bucket: 9,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: 1,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 100,
+        usage_units: [("a".to_string(), 2u64), ("b".to_string(), 3)]
+            .into_iter()
+            .collect(),
+    };
+    s.add_metering(&base).unwrap();
+    s.add_metering(&base).unwrap();
+    assert_eq!(s.list_metering(9).unwrap().len(), 1);
+    let units = &s.list_metering(9).unwrap()[0].usage_units;
+    assert_eq!((units["a"], units["b"]), (4, 6));
+
+    let mut repriced = base.clone();
+    repriced.priced_from_ms = 200;
+    s.add_metering(&repriced).unwrap();
+    assert_eq!(s.list_metering(9).unwrap().len(), 2);
+
+    let mut other_provider = base.clone();
+    other_provider.provider = "q".to_string();
+    s.add_metering(&other_provider).unwrap();
+    assert_eq!(s.list_metering(9).unwrap().len(), 3);
+}
+
+/// `public_id` and slot occupancy are per `kind`: the same value under another kind is no clash.
+#[test]
+fn credential_preconditions_are_scoped_to_the_kind() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c1", "k", "P")).unwrap();
+    let mut other = credential("c2", "k", "P");
+    other.meta.kind = "other".to_string();
+    s.put_credential(&other)
+        .expect("same public_id and slot under another kind");
+    assert_eq!(s.list_credentials("k").unwrap().len(), 2);
+}
+
+/// `list_plane_record_parents` lists a parent once however many records its chain holds, and
+/// `delete_plane_record` on that identity removes every `seq` of the chain.
+#[test]
+fn plane_chains_list_one_parent_and_delete_every_seq() {
+    let s = MemoryStore::new();
+    for seq in 1..=3 {
+        s.append_plane_record(plane_event("t1", seq, b"e").view())
+            .unwrap();
+    }
+    s.append_plane_record(plane_event("t2", 1, b"e").view())
+        .unwrap();
+    assert_eq!(
+        s.list_plane_record_parents("task_event").unwrap(),
+        vec!["t1".to_string(), "t2".to_string()]
+    );
+    s.delete_plane_record("task_event", "t1").unwrap();
+    assert!(s
+        .list_plane_records("task_event", &PlaneSelector::Parent("t1".into()))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        s.list_plane_records("task_event", &PlaneSelector::All)
+            .unwrap()
+            .len(),
+        1
+    );
+}
