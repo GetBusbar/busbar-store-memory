@@ -673,9 +673,17 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
                 "invalid memory plugin config: unknown setting `{k}` (the memory store takes no settings)"
             )),
         },
-        other => Err(format!(
-            "invalid memory plugin config: expected a JSON object, got {other}"
-        )),
+        other => {
+            let got = match other {
+                serde_json::Value::Bool(_) => "a boolean",
+                serde_json::Value::Number(_) => "a number",
+                serde_json::Value::String(_) => "a string",
+                _ => "an array",
+            };
+            Err(format!(
+                "invalid memory plugin config: expected a JSON object, got {got}"
+            ))
+        }
     }
 }
 
