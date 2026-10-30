@@ -14,11 +14,11 @@ First-party signed kind:store plugin cdylib: the in-memory store, packaged as a 
 
 `busbar-store-memory` is a `kind: store` busbar plugin.
 
-Everything it holds is in RAM and lost on restart, and its RAM grows with the record count (the node journal's records are kept for the life of the process); long-lived deployments use a durable store.
+Everything it holds is in RAM and lost on restart, and its RAM grows with the record count (the kernel-held records map is never aged out); long-lived deployments use a durable store.
 
 ## Config
 
-Configured under the `memory` module name.
+Configured under the `memory` module name. The store takes no settings except an ignored `token`.
 
 ## Build
 
