@@ -626,6 +626,25 @@ fn a_mint_into_a_revoked_slot_replaces_the_revoked_row() {
     assert_eq!(ids, vec!["c3".to_string()], "the atomic mint upserts too");
 }
 
+/// The upsert on `(key_id, kind, slot)` replaces a revoked row, so re-minting that row's own
+/// `public_id` into its slot is not a clash with the row it replaces.
+#[test]
+fn a_remint_into_a_revoked_slot_may_reuse_its_public_id() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c1", "k", "P1")).unwrap();
+    s.revoke_credential("c1", "rotated").unwrap();
+    s.put_credential(&credential("c2", "k", "P1"))
+        .expect("the revoked row is replaced, its public_id with it");
+    let ids: Vec<String> = s
+        .list_credentials("k")
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, vec!["c2".to_string()]);
+}
+
 /// A pure READ must not queue behind another pure read. `list_keys` over a large table clones every
 /// row while holding the `keys` lock, and on the governance hot path a `get_key` arriving in that
 /// window is an admit decision waiting: if both take the WRITE side of the `RwLock`, the point read
