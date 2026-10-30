@@ -25,9 +25,6 @@ crate-type = ["rlib"]
 # backend answers them at the contract's own spelling. busbar-contract is the ONE busbar crate a
 # plugin names, pinned by git rev to the busbar commit in `.busbar-ref` (the workspace row).
 busbar-contract = { workspace = true }
-# The dedupe log keeps a SHA-256 digest of each op's value fields, never their text, so what it
-# holds per op is fixed size. Already in busbar-contract's own closure: no crate is added.
-sha2 = { workspace = true }
 # The store takes no settings; `validate`/`open` parse them only to refuse malformed JSON and keys.
 serde_json = { workspace = true }
 

@@ -175,3 +175,30 @@ fn the_dedupe_log_keeps_a_fixed_size_record_per_op() {
         Err(OpRefused::Conflict)
     ));
 }
+
+#[test]
+fn a_plane_append_replays_once_and_a_reused_op_id_conflicts() {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
+    let s = MemoryStore::new();
+    let event = |seq: u64, body: &[u8]| PlaneRecord {
+        kind: "task_event".to_string(),
+        id: "t1".to_string(),
+        parent: Some("t1".to_string()),
+        seq,
+        ts: 0,
+        disposition: PlaneDisposition::Active,
+        body: body.to_vec(),
+    };
+    let (a, b) = (event(1, b"a"), event(2, b"b"));
+    s.v3_append_plane_record_op(op(1), a.view()).expect("first");
+    s.v3_append_plane_record_op(op(1), a.view())
+        .expect("replay");
+    assert_eq!(
+        s.v3_append_plane_record_op(op(1), b.view()),
+        Err(OpRefused::Conflict)
+    );
+    let rows = s
+        .list_plane_records("task_event", &PlaneSelector::All)
+        .expect("list");
+    assert_eq!(rows, vec![b"a".to_vec()]);
+}
