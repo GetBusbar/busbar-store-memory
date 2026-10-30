@@ -25,7 +25,8 @@ crate-type = ["rlib"]
 # backend answers them at the contract's own spelling. busbar-contract is the ONE busbar crate a
 # plugin names, pinned by git rev to the busbar commit in `.busbar-ref` (the workspace row).
 busbar-contract = { workspace = true }
-# The store takes no settings; `validate`/`open` parse them only to refuse malformed JSON and keys.
+# The store takes no settings (a 1.5.5 `token` is accepted and ignored); `validate`/`open` parse
+# them only to refuse malformed JSON and other keys.
 serde_json = { workspace = true }
 
 [dev-dependencies]

@@ -657,7 +657,8 @@ impl Store for MemoryStore {
 }
 
 /// The memory store takes no settings: empty, whitespace, `null` and `{}` are all "none"; malformed
-/// JSON, a non-object, or any key is refused. Shared by `validate` and `open`.
+/// JSON, a non-object, or any key but `token` is refused. `token` (any value) is a 1.5.5 config
+/// key, accepted and ignored. Shared by `validate` and `open`.
 pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
     if settings.trim_ascii().is_empty() {
         return Ok(());
@@ -666,7 +667,7 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("invalid memory plugin config: {e}"))?;
     match v {
         serde_json::Value::Null => Ok(()),
-        serde_json::Value::Object(m) => match m.keys().next() {
+        serde_json::Value::Object(m) => match m.keys().find(|k| *k != "token") {
             None => Ok(()),
             Some(k) => Err(format!(
                 "invalid memory plugin config: unknown setting `{k}` (the memory store takes no settings)"
