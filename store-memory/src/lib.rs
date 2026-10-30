@@ -213,8 +213,14 @@ impl MemoryStore {
             )));
         }
         // UNIQUE(kind, public_id), even across keys: a public_id is a global lookup handle.
+        // A revoked row in this mint's own slot is replaced by it, so it holds no clash.
         let public_id_taken = creds.values().any(|c| {
-            c.meta.id != meta.id && c.meta.kind == meta.kind && c.meta.public_id == meta.public_id
+            c.meta.id != meta.id
+                && c.meta.kind == meta.kind
+                && c.meta.public_id == meta.public_id
+                && !(c.meta.key_id == meta.key_id
+                    && c.meta.slot == meta.slot
+                    && c.meta.revoked_at.is_some())
         });
         if public_id_taken {
             return Err(StoreError(format!(
@@ -552,7 +558,7 @@ impl Store for MemoryStore {
         selector: &PlaneSelector<'_>,
     ) -> StoreResult<Vec<Vec<u8>>> {
         let records = read(&self.plane_records);
-        // `seq`, then the record's identity and id: a total order, independent of the map's.
+        // `seq`, then the map key: a total order, independent of the map's.
         let mut rows: Vec<(&PlaneKey, &PlaneRecord)> = records
             .iter()
             .filter(|((k, _, _), r)| {
@@ -563,7 +569,7 @@ impl Store for MemoryStore {
                     }
             })
             .collect();
-        rows.sort_by_key(|(key, r)| (r.seq, &key.1, &r.id));
+        rows.sort_by_key(|(key, r)| (r.seq, *key));
         Ok(rows.into_iter().map(|(_, r)| r.body.clone()).collect())
     }
 
