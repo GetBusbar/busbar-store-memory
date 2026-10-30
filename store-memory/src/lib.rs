@@ -97,7 +97,6 @@ pub struct MemoryStore {
     /// Write counters driving each map's amortized sweep (`records` has none: never aged out).
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
-    keys_sweep_ticker: AtomicU64,
     creds_sweep_ticker: AtomicU64,
     tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`), bumped on every
@@ -246,15 +245,6 @@ impl Store for MemoryStore {
         }
         key.revision = self.next_revision();
         keys.insert(key.id.clone(), key);
-
-        // Stale tombstones go in an amortized sweep; a live row is never pruned.
-        if sweep_due(&self.keys_sweep_ticker) {
-            let n = self.now();
-            keys.retain(|_, k| match k.deleted_at {
-                None => true,
-                Some(deleted_at) => deleted_at.saturating_add(MAX_RETENTION_SECS) > n,
-            });
-        }
         Ok(())
     }
 
