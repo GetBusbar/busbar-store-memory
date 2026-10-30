@@ -535,52 +535,33 @@ fn add_metering_sweep_boundary_is_exact() {
     );
 }
 
-/// `delete_key` tombstones rows (kept forever, by design, for billing/audit attribution), and
-/// that growth needs its own bound — unlike `usage` and
-/// `metering`, the `keys` map had no retention sweep, so a repeated self-serve refresh loop by
-/// one principal grew it without bound. `put_key` (the hot write path for issue/refresh) now
-/// runs the SAME amortized sweep, pruning only tombstoned rows past the 31-day ceiling; a live
-/// row is NEVER a candidate regardless of age, and a recently-tombstoned row survives.
+/// A tombstone is permanent (the contract: the id is never reissued, `delete_key` stays
+/// idempotent), so no sweep ages it out however old it is.
 #[test]
-fn put_key_sweeps_stale_tombstones() {
+fn a_tombstone_survives_every_sweep_and_its_id_stays_refused() {
     let s = MemoryStore::new();
     let n = now();
-    let old_deleted_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
+    let old_deleted_at = n.saturating_sub(40 * 86_400);
 
-    // Tombstone one key far in the past (pin the clock at delete time so its `deleted_at` lands
-    // well past the retention ceiling).
     s.put_key(&key("old-tombstone")).unwrap();
     s.pin_clock(old_deleted_at);
     s.delete_key("old-tombstone").unwrap();
-    assert_eq!(
-        s.get_key("old-tombstone").unwrap().unwrap().deleted_at,
-        Some(old_deleted_at)
-    );
-
-    // A live key (never tombstoned) and a recently-tombstoned key.
     s.put_key(&key("live")).unwrap();
-    s.put_key(&key("recent-tombstone")).unwrap();
-    s.pin_clock(n); // back to "now" — governs both the recent tombstone and the sweep's ceiling
-    s.delete_key("recent-tombstone").unwrap();
+    s.pin_clock(n);
 
-    // Fire the amortized sweep with a batch of unrelated writes (mirrors add_usage/add_metering
-    // sweep tests: SWEEP_INTERVAL put_key calls guarantee the sweep fires at least once).
-    for i in 0..SWEEP_INTERVAL {
+    for i in 0..2 * SWEEP_INTERVAL {
         s.put_key(&key(&format!("filler-{i}"))).unwrap();
     }
 
+    let kept = s.get_key("old-tombstone").unwrap().expect("tombstone kept");
+    assert_eq!(kept.deleted_at, Some(old_deleted_at));
     assert!(
-        s.get_key("old-tombstone").unwrap().is_none(),
-        "a tombstone past the 31-day retention ceiling must be pruned"
+        s.put_key(&key("old-tombstone")).is_err(),
+        "a live write over an aged tombstone reissued the id"
     );
-    assert!(
-        s.get_key("live").unwrap().is_some(),
-        "a live (never-deleted) key must never be pruned, regardless of age"
-    );
-    assert!(
-        s.get_key("recent-tombstone").unwrap().is_some(),
-        "a tombstone within the retention window must survive"
-    );
+    s.delete_key("old-tombstone")
+        .expect("delete stays idempotent");
+    assert!(s.get_key("live").unwrap().is_some());
 }
 
 /// Unlike `usage`/`metering`/tombstoned `keys`, the `creds` map had NO
