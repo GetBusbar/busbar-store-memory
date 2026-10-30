@@ -564,41 +564,20 @@ fn a_tombstone_survives_every_sweep_and_its_id_stays_refused() {
     assert!(s.get_key("live").unwrap().is_some());
 }
 
-/// Unlike `usage`/`metering`/tombstoned `keys`, the `creds` map had NO
-/// retention sweep at all — its only shrink path was `delete_key`'s cascade, which never fires for
-/// a credential rotated on a LIVE key. A long-lived key's occupied-slot -> revoke -> re-put
-/// rotation cycle (mint into the free slot, revoke the old one) therefore grew `creds` without
-/// bound. `put_credential` now runs the same amortized sweep, pruning only REVOKED rows past the
-/// 31-day ceiling; a live (never-revoked) credential is NEVER a candidate regardless of age, and a
-/// recently-revoked one survives.
+/// A revoked credential is kept, however old: revoking it again is `Ok` (the contract), and no
+/// sweep may turn that retry into "unknown id".
 #[test]
-fn put_credential_sweeps_stale_revoked_creds() {
+fn a_revoked_credential_survives_every_sweep_and_revoke_stays_idempotent() {
     let s = MemoryStore::new();
     let n = now();
-    let old_revoked_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
-
     s.put_key(&key("k-old")).unwrap();
     s.put_credential(&credential("old-revoked", "k-old", "AKIA_OLD"))
         .unwrap();
-    // Revoke it far in the past (pin the clock at revoke time so `revoked_at` lands well past
-    // the retention ceiling) — `revoke_credential` stamps `revoked_at` from the real wall clock,
-    // not the pinned one, so pin first, revoke, then verify the stamped value directly.
-    s.pin_clock(old_revoked_at);
+    s.pin_clock(n.saturating_sub(40 * 86_400));
     s.revoke_credential("old-revoked", "rotated").unwrap();
+    s.pin_clock(n);
 
-    // A live (never-revoked) credential and a recently-revoked one.
-    s.put_key(&key("k-live")).unwrap();
-    s.put_credential(&credential("live", "k-live", "AKIA_LIVE"))
-        .unwrap();
-    s.put_key(&key("k-recent")).unwrap();
-    s.put_credential(&credential("recent-revoked", "k-recent", "AKIA_RECENT"))
-        .unwrap();
-    s.pin_clock(n); // back to "now" — governs both the recent revoke and the sweep's ceiling
-    s.revoke_credential("recent-revoked", "rotated").unwrap();
-
-    // Fire the amortized sweep with a batch of unrelated put_credential calls (mirrors
-    // put_key_sweeps_stale_tombstones): SWEEP_INTERVAL calls guarantee the sweep fires.
-    for i in 0..SWEEP_INTERVAL {
+    for i in 0..2 * SWEEP_INTERVAL {
         let kid = format!("k-filler-{i}");
         s.put_key(&key(&kid)).unwrap();
         s.put_credential(&credential(
@@ -609,24 +588,13 @@ fn put_credential_sweeps_stale_revoked_creds() {
         .unwrap();
     }
 
-    assert!(
-        s.lookup_credential_secret("generic", "AKIA_OLD")
-            .unwrap()
-            .is_none(),
-        "a credential revoked past the 31-day retention ceiling must be pruned"
-    );
-    assert!(
-        s.lookup_credential_secret("generic", "AKIA_LIVE")
-            .unwrap()
-            .is_some(),
-        "a live (never-revoked) credential must never be pruned, regardless of age"
-    );
-    assert!(
-        s.lookup_credential_secret("generic", "AKIA_RECENT")
-            .unwrap()
-            .is_some(),
-        "a credential revoked within the retention window must survive"
-    );
+    s.revoke_credential("old-revoked", "again")
+        .expect("a retried revoke of an already-revoked credential is Ok");
+    let kept = s
+        .lookup_credential_secret("generic", "AKIA_OLD")
+        .unwrap()
+        .expect("revoked row kept");
+    assert_eq!(kept.meta.revoke_reason.as_deref(), Some("rotated"));
 }
 
 /// A pure READ must not queue behind another pure read. `list_keys` over a large table clones every
