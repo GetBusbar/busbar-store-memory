@@ -97,7 +97,6 @@ pub struct MemoryStore {
     /// Write counters driving each map's amortized sweep (`records` has none: never aged out).
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
-    creds_sweep_ticker: AtomicU64,
     tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`), bumped on every
     /// `keys`/`creds` mutation.
@@ -401,16 +400,6 @@ impl Store for MemoryStore {
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         creds.insert(secret.meta.id.clone(), secret);
-
-        // Revoked credentials go in an amortized sweep, aged from `revoked_at`; a live credential
-        // is never pruned.
-        if sweep_due(&self.creds_sweep_ticker) {
-            let n = self.now();
-            creds.retain(|_, c| match c.meta.revoked_at {
-                None => true,
-                Some(revoked_at) => revoked_at.saturating_add(MAX_RETENTION_SECS) > n,
-            });
-        }
         Ok(())
     }
 
@@ -467,7 +456,7 @@ impl Store for MemoryStore {
         let Some(c) = creds.get_mut(id) else {
             return Err(StoreError(format!("revoke_credential: unknown id '{id}'")));
         };
-        // Idempotent. Stamped from `self.now()`, the clock the creds sweep ages against.
+        // Idempotent: a repeat keeps the first `revoked_at` and reason.
         if c.meta.revoked_at.is_none() {
             c.meta.revoked_at = Some(self.now());
             c.meta.revoke_reason = Some(reason.to_string());
