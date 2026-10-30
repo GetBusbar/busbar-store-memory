@@ -59,8 +59,11 @@ fn settings_accept_and_ignore_a_token() {
             "{ok}"
         );
         assert!(
-            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(ok.as_bytes(), None)
-                .is_ok(),
+            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(
+                ok.as_bytes(),
+                None
+            )
+            .is_ok(),
             "{ok}"
         );
     }
