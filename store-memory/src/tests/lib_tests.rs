@@ -397,6 +397,27 @@ fn add_usage_sweep_boundary_is_exact() {
     );
 }
 
+/// The all-time window (`window_start == 0`) is the ledger's own row, not an aged period: the
+/// sweep never evicts it.
+#[test]
+fn add_usage_sweep_keeps_the_all_time_window() {
+    let s = MemoryStore::new();
+    s.pin_clock(100 * 86_400);
+    let d = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![],
+    };
+    for _ in 0..SWEEP_INTERVAL {
+        s.add_usage("b", 0, &d).unwrap();
+    }
+    assert_eq!(
+        s.get_usage("b", 0).unwrap().requests,
+        SWEEP_INTERVAL as u64,
+        "the sweep evicted the all-time ledger row"
+    );
+}
+
 /// Regression: `metering` must not grow unbounded forever either — same amortized sweep, keyed
 /// by the (day) `bucket` field this time.
 #[test]
