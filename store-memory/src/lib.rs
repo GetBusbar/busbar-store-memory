@@ -44,6 +44,9 @@ type MeteringKey = (String, u64, String, String, u64);
 /// A plane record's key: `(kind, identity, seq)`.
 type PlaneKey = (String, String, u64);
 
+/// The `seq` an upserted plane record is stored at (it is keyed by `(kind, id)`).
+const UPSERT_SEQ: u64 = 0;
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -184,7 +187,7 @@ impl MemoryStore {
     /// An UPSERTED record's key in the one map: its own `id`, parent or not (the contract upserts
     /// by `(kind, id)`), so `get_plane_record`/`delete_plane_record` reach it by that id.
     fn upsert_key(record: PlaneRecordRef<'_>) -> PlaneKey {
-        (record.kind.to_string(), record.id.to_string(), record.seq)
+        (record.kind.to_string(), record.id.to_string(), UPSERT_SEQ)
     }
 
     /// The two credential-table preconditions, shared by `put_credential` and the atomic
@@ -520,7 +523,7 @@ impl Store for MemoryStore {
 
     fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
         Ok(read(&self.plane_records)
-            .get(&(kind.to_string(), id.to_string(), 0))
+            .get(&(kind.to_string(), id.to_string(), UPSERT_SEQ))
             .map(|r| r.body.clone()))
     }
 
@@ -651,7 +654,7 @@ impl Store for MemoryStore {
         now: u64,
     ) -> StoreResult<bool> {
         Ok(read(&self.plane_records)
-            .get(&(kind.to_string(), token.to_string(), 0))
+            .get(&(kind.to_string(), token.to_string(), UPSERT_SEQ))
             .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
     }
 }
