@@ -413,7 +413,7 @@ fn add_usage_sweep_keeps_the_all_time_window() {
     }
     assert_eq!(
         s.get_usage("b", 0).unwrap().requests,
-        SWEEP_INTERVAL as u64,
+        SWEEP_INTERVAL,
         "the sweep evicted the all-time ledger row"
     );
 }

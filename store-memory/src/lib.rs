@@ -553,7 +553,7 @@ impl Store for MemoryStore {
     ) -> StoreResult<Vec<Vec<u8>>> {
         let records = read(&self.plane_records);
         // `seq`, then the record's identity and id: a total order, independent of the map's.
-        let mut rows: Vec<((u64, &str, &str), Vec<u8>)> = records
+        let mut rows: Vec<(&PlaneKey, &PlaneRecord)> = records
             .iter()
             .filter(|((k, _, _), r)| {
                 k == kind
@@ -562,12 +562,9 @@ impl Store for MemoryStore {
                         PlaneSelector::Parent(p) => r.parent.as_deref() == Some(&**p),
                     }
             })
-            .map(|((_, identity, _), r)| {
-                ((r.seq, identity.as_str(), r.id.as_str()), r.body.clone())
-            })
             .collect();
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(rows.into_iter().map(|(_, body)| body).collect())
+        rows.sort_by_key(|(key, r)| (r.seq, &key.1, &r.id));
+        Ok(rows.into_iter().map(|(_, r)| r.body.clone()).collect())
     }
 
     fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
