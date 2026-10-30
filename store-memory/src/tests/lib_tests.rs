@@ -597,6 +597,35 @@ fn a_revoked_credential_survives_every_sweep_and_revoke_stays_idempotent() {
     assert_eq!(kept.meta.revoke_reason.as_deref(), Some("rotated"));
 }
 
+/// The contract upserts a credential on `(key_id, kind, slot)`: minting into a slot a REVOKED
+/// credential holds replaces that row, whether or not the id is the same. Both mint paths.
+#[test]
+fn a_mint_into_a_revoked_slot_replaces_the_revoked_row() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c1", "k", "P1")).unwrap();
+    s.revoke_credential("c1", "rotated").unwrap();
+    s.put_credential(&credential("c2", "k", "P2")).unwrap();
+    let ids: Vec<String> = s
+        .list_credentials("k")
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, vec!["c2".to_string()], "slot 0 holds one row");
+
+    s.revoke_credential("c2", "rotated").unwrap();
+    s.put_key_with_credential(&key("k"), &credential("c3", "k", "P3"))
+        .unwrap();
+    let ids: Vec<String> = s
+        .list_credentials("k")
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(ids, vec!["c3".to_string()], "the atomic mint upserts too");
+}
+
 /// A pure READ must not queue behind another pure read. `list_keys` over a large table clones every
 /// row while holding the `keys` lock, and on the governance hot path a `get_key` arriving in that
 /// window is an admit decision waiting: if both take the WRITE side of the `RwLock`, the point read
