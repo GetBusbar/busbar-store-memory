@@ -1651,3 +1651,28 @@ fn a_redeemed_token_is_spent_through_its_expiry_second() {
         "the sweep dropped a row that is still spent"
     );
 }
+
+fn events_of(s: &MemoryStore, task: &str) -> usize {
+    s.list_plane_records("task_event", &PlaneSelector::Parent(task.into()))
+        .unwrap()
+        .len()
+}
+
+/// Deleting a task takes its `task_event` chain with it, and only that task's.
+#[test]
+fn deleting_a_task_deletes_its_event_chain() {
+    let s = MemoryStore::new();
+    for t in ["t1", "t2"] {
+        s.upsert_plane_record(plane_task(t, PlaneDisposition::Active).view())
+            .unwrap();
+        for seq in 1..=2 {
+            s.append_plane_record(plane_event(t, seq, b"e").view())
+                .unwrap();
+        }
+    }
+    s.delete_plane_record("task", "t1").unwrap();
+    assert!(s.get_plane_record("task", "t1").unwrap().is_none());
+    assert_eq!(events_of(&s, "t1"), 0, "the task's events outlived it");
+    assert_eq!(events_of(&s, "t2"), 2);
+    assert!(s.get_plane_record("task", "t2").unwrap().is_some());
+}
