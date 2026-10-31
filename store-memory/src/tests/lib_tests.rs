@@ -1720,3 +1720,54 @@ fn purging_tasks_takes_their_event_chains() {
     assert_eq!(s.purge_plane_records_before("task", 10).unwrap(), 1);
     assert_eq!(events_of(&s, "t"), 0);
 }
+
+/// Counters pin at `i64::MAX`, on a put and on accrual, so a row reads back the same in every store.
+#[test]
+fn counters_pin_at_i64_max() {
+    const MAX: u64 = i64::MAX as u64;
+    let s = MemoryStore::new();
+
+    s.put_usage("a", 0, &ledger(u64::MAX, "m", u64::MAX, 7))
+        .unwrap();
+    let u = s.get_usage("a", 0).unwrap();
+    assert_eq!((u.requests, u.billable_requests), (MAX, MAX));
+    assert_eq!((u.total_input(), u.total_output()), (MAX, 7));
+
+    s.put_usage("b", 0, &ledger(MAX - 1, "m", MAX - 1, 0)).unwrap();
+    let d = UsageDelta {
+        requests: 5,
+        billable_requests: 5,
+        models: vec![busbar_contract::records::ModelTokensDelta {
+            model: "m".to_string(),
+            usage_units: [(busbar_contract::records::UNIT_INPUT.to_string(), 5i64)]
+                .into_iter()
+                .collect(),
+        }],
+    };
+    s.add_usage("b", 0, &d).unwrap();
+    let u = s.get_usage("b", 0).unwrap();
+    assert_eq!((u.requests, u.billable_requests, u.total_input()), (MAX, MAX, MAX));
+
+    let m = MeteringDelta {
+        usage_units: [("open".to_string(), u64::MAX)].into_iter().collect(),
+        key_id: "a".to_string(),
+        bucket: 7,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: u64::MAX,
+        tokens_output: MAX,
+        tokens_cache_read: 1,
+        tokens_cache_write: 0,
+        requests: u64::MAX,
+        billable_requests: MAX,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+    };
+    s.add_metering(&m).unwrap();
+    s.add_metering(&m).unwrap();
+    let r = &s.list_metering(7).unwrap()[0];
+    assert_eq!((r.tokens_input, r.tokens_output, r.tokens_cache_read), (MAX, MAX, 2));
+    assert_eq!((r.requests, r.billable_requests), (MAX, MAX));
+    assert_eq!(r.usage_units["open"], MAX);
+}
