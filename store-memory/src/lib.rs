@@ -198,6 +198,15 @@ impl MemoryStore {
         secret: &CredentialSecret,
     ) -> StoreResult<()> {
         let meta = &secret.meta;
+        if creds
+            .get(&meta.id)
+            .is_some_and(|c| c.meta.revoked_at.is_some())
+        {
+            return Err(StoreError(format!(
+                "{op}: credential '{}' is revoked; a revoked credential is never re-minted",
+                meta.id
+            )));
+        }
         // An explicit slot pointed at a LIVE credential of the same (key_id, kind) would silently
         // clobber a working credential mid-overlap-window.
         let occupied = creds.values().any(|c| {
