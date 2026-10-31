@@ -325,7 +325,7 @@ impl Store for MemoryStore {
     /// Unfiltered: tombstones are included, since the default `list_keys_since` needs them.
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         let mut v: Vec<VirtualKey> = read(&self.keys).values().cloned().collect();
-        v.sort_by_key(|k| k.created_at);
+        v.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         Ok(v)
     }
 
@@ -351,11 +351,13 @@ impl Store for MemoryStore {
     }
 
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
-        Ok(read(&self.keys)
+        let mut v: Vec<VirtualKey> = read(&self.keys)
             .values()
             .filter(|k| k.revision > since)
             .cloned()
-            .collect())
+            .collect();
+        v.sort_by_key(|k| k.revision);
+        Ok(v)
     }
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
@@ -522,11 +524,13 @@ impl Store for MemoryStore {
     }
 
     fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
-        Ok(read(&self.creds)
+        let mut v: Vec<CredentialMeta> = read(&self.creds)
             .values()
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
-            .collect())
+            .collect();
+        v.sort_by(|a, b| (&a.kind, a.slot).cmp(&(&b.kind, b.slot)));
+        Ok(v)
     }
 
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
