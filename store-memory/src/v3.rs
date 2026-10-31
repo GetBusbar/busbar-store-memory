@@ -33,11 +33,15 @@ use crate::{read, write, MemoryStore};
 const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
     &[busbar_contract::abi::sdk::door::abi_str("token")];
 
+/// The most ops the host may hold in flight: the memory store answers every op inline and never
+/// pends, so this only bounds a flood.
+const MAX_INFLIGHT: u32 = 1024;
+
 busbar_contract::store_door!(
     MemoryStore,
     "memory",
     env!("CARGO_PKG_VERSION"),
-    1024,
+    MAX_INFLIGHT,
     secret_refs: SECRET_REFS
 );
 
