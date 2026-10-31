@@ -142,7 +142,7 @@ fn add_usage_accumulates_per_model() {
 }
 
 #[test]
-fn delete_key_tombstones_and_cascades_usage_and_creds() {
+fn delete_key_tombstones_and_cascades_creds_but_keeps_usage() {
     let s = MemoryStore::new();
     s.put_key(&key("a")).unwrap();
     s.put_usage("a", 0, &ledger(1, "m", 5, 0)).unwrap();
@@ -152,7 +152,8 @@ fn delete_key_tombstones_and_cascades_usage_and_creds() {
     let tombstone = s.get_key("a").unwrap().unwrap();
     assert!(!tombstone.enabled);
     assert!(tombstone.deleted_at.is_some());
-    assert_eq!(s.get_usage("a", 0).unwrap(), UsageLedger::default());
+    // Usage is billing evidence: it outlives the key.
+    assert_eq!(s.get_usage("a", 0).unwrap().requests, 1);
     assert!(s.list_credentials("a").unwrap().is_empty());
     // Idempotent: a second delete of an already-tombstoned key is a no-op, not an error.
     s.delete_key("a").unwrap();
@@ -799,7 +800,7 @@ fn a_losing_redemption_leaves_the_winners_expiry() {
     assert!(s.redeem_plane_token("ask", "n3", 100, 0).unwrap());
     assert!(!s.redeem_plane_token("ask", "n3", 5_000, 50).unwrap());
     assert!(
-        s.redeem_plane_token("ask", "n3", 6_000, 100).unwrap(),
+        s.redeem_plane_token("ask", "n3", 6_000, 101).unwrap(),
         "a lapsed claim stays blocked by a loser's expiry"
     );
 }
@@ -993,7 +994,7 @@ fn plane_token_live_is_true_while_active_and_unexpired_and_is_repeatable() {
 }
 
 /// Fail-closed on every non-live case: unknown `(kind, token)`, a terminal disposition, and a lapsed
-/// deadline (`now >= expires_at`) each yield `Ok(false)`.
+/// deadline (`now > expires_at`) each yield `Ok(false)`; `now == expires_at` is still live.
 #[test]
 fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
     let s = MemoryStore::new();
@@ -1005,11 +1006,10 @@ fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
         .unwrap();
     assert!(!s.plane_token_live("other", "t1", 1000, 100).unwrap());
 
-    // Expired: now == expires_at is already past (`now < expires_at` is the live predicate), and
-    // now > expires_at likewise.
+    // Live while now <= expires_at; dead only once now > expires_at.
     assert!(
-        !s.plane_token_live("task", "t1", 1000, 1000).unwrap(),
-        "now == expires_at is not before the deadline"
+        s.plane_token_live("task", "t1", 1000, 1000).unwrap(),
+        "now == expires_at is the last live second"
     );
     assert!(!s.plane_token_live("task", "t1", 1000, 1001).unwrap());
 
@@ -1476,4 +1476,359 @@ fn plane_chains_list_one_parent_and_delete_every_seq() {
             .len(),
         1
     );
+}
+
+/// One text per condition, the calling method's own name in front of it.
+#[test]
+fn credential_refusals_name_the_calling_method() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_key(&key("other")).unwrap();
+    s.put_credential(&credential("c1", "k", "P1")).unwrap();
+
+    let live_slot = |op: &str| {
+        format!("{op}: slot 0 for key 'k' kind 'generic' holds a live credential; revoke it first")
+    };
+    let taken = |op: &str| format!("{op}: public_id 'P1' is already in use for kind 'generic'");
+
+    let err = s.put_credential(&credential("c2", "k", "P2")).unwrap_err();
+    assert_eq!(err.0, live_slot("put_credential"));
+    let err = s
+        .put_key_with_credential(&key("k"), &credential("c2", "k", "P2"))
+        .unwrap_err();
+    assert_eq!(err.0, live_slot("put_key_with_credential"));
+
+    let err = s
+        .put_credential(&credential("c3", "other", "P1"))
+        .unwrap_err();
+    assert_eq!(err.0, taken("put_credential"));
+    let err = s
+        .put_key_with_credential(&key("other"), &credential("c3", "other", "P1"))
+        .unwrap_err();
+    assert_eq!(err.0, taken("put_key_with_credential"));
+
+    assert_eq!(
+        s.revoke_credential("nope", "r").unwrap_err().0,
+        "revoke_credential: unknown id 'nope'"
+    );
+    assert_eq!(
+        s.delete_key("nope").unwrap_err().0,
+        "delete_key: unknown id 'nope'"
+    );
+}
+
+/// A revoked credential id is never re-minted, by either mint path, in any slot; a NEW id minted
+/// into a revoked occupant's slot reclaims it.
+#[test]
+fn a_revoked_credential_id_is_never_reminted() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c1", "k", "P1")).unwrap();
+    s.revoke_credential("c1", "rotated").unwrap();
+
+    let text = |op: &str| {
+        format!("{op}: credential 'c1' is revoked; a revoked credential is never re-minted")
+    };
+    let mut elsewhere = credential("c1", "k", "P1");
+    elsewhere.meta.slot = 3;
+    for again in [credential("c1", "k", "P1"), elsewhere] {
+        let r = s.put_credential(&again);
+        assert_eq!(
+            r.expect_err("a revoked id was re-minted").0,
+            text("put_credential")
+        );
+        let r = s.put_key_with_credential(&key("k"), &again);
+        assert_eq!(
+            r.expect_err("a revoked id was re-minted").0,
+            text("put_key_with_credential")
+        );
+    }
+    let kept = s.list_credentials("k").unwrap();
+    assert_eq!(kept.len(), 1);
+    assert!(
+        kept[0].revoked_at.is_some(),
+        "the revoked row was rewritten"
+    );
+
+    let mut fresh = credential("c2", "k", "P2");
+    fresh.meta.created_at = 77;
+    s.put_credential(&fresh).unwrap();
+    let rows = s.list_credentials("k").unwrap();
+    assert_eq!(rows.len(), 1, "the new id reclaims the slot");
+    assert_eq!((rows[0].id.as_str(), rows[0].created_at), ("c2", 77));
+}
+
+/// Re-putting a live credential: identical content (revision aside) is Ok and writes nothing;
+/// different content is refused, naming the slot it holds.
+#[test]
+fn reputting_a_live_credential_is_idempotent_or_refused() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    let c = credential("c1", "k", "P1");
+    s.put_credential(&c).unwrap();
+    let stored = s.list_credentials("k").unwrap()[0].revision;
+
+    s.put_credential(&c).unwrap();
+    s.put_key_with_credential(&key("k"), &c).unwrap();
+    assert_eq!(
+        s.list_credentials("k").unwrap()[0].revision,
+        stored,
+        "an identical re-put wrote"
+    );
+
+    let text = |op: &str| {
+        format!("{op}: slot 0 for key 'k' kind 'generic' holds a live credential; revoke it first")
+    };
+    let mut changed = c.clone();
+    changed.secret = "v1:plain:other".to_string();
+    assert_eq!(
+        s.put_credential(&changed).expect_err("changed secret").0,
+        text("put_credential")
+    );
+    assert_eq!(
+        s.put_key_with_credential(&key("k"), &changed)
+            .expect_err("changed secret")
+            .0,
+        text("put_key_with_credential")
+    );
+    let mut moved = c.clone();
+    moved.meta.public_id = "P9".to_string();
+    assert!(s.put_credential(&moved).is_err());
+    let row = s
+        .lookup_credential_secret("generic", "P1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.secret, "v1:plain:sek",
+        "a refused re-put changed the row"
+    );
+}
+
+/// Revoking destroys the secret material: the revoked row keeps its metadata, loses its secret and
+/// its form; a repeat revoke is a no-op.
+#[test]
+fn revoke_credential_destroys_the_secret() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c", "k", "P")).unwrap();
+    let minted = s.list_credentials("k").unwrap()[0].revision;
+    s.pin_clock(1_000);
+    s.revoke_credential("c", "leaked").unwrap();
+
+    let rows = s.list_credentials_since(minted).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].secret, "", "the secret outlived its revoke");
+    assert_eq!(rows[0].meta.secret_form, SecretForm::None);
+    assert_eq!(rows[0].meta.revoked_at, Some(1_000));
+    assert_eq!(rows[0].meta.revoke_reason.as_deref(), Some("leaked"));
+    assert!(rows[0].meta.revision > minted);
+
+    s.revoke_credential("c", "again").unwrap();
+    assert_eq!(s.list_credentials_since(minted).unwrap(), rows);
+}
+
+/// A stored entry is spent while its `expires_at >= now` (the caller's `now`); only `expires_at <
+/// now` is lapsed. The amortised sweep drops the same rows and no others.
+#[test]
+fn a_redeemed_token_is_spent_through_its_expiry_second() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 100, 0).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n1", 500, 99).unwrap());
+    assert!(
+        !s.redeem_plane_token("ask", "n1", 500, 100).unwrap(),
+        "spent at now == expires_at"
+    );
+    assert!(s.redeem_plane_token("ask", "n1", 500, 101).unwrap());
+
+    assert!(s.redeem_plane_token("ask", "edge", 1_000, 0).unwrap());
+    for i in 0..SWEEP_INTERVAL {
+        assert!(s
+            .redeem_plane_token("ask", &format!("m{i}"), 5_000, 1_000)
+            .unwrap());
+    }
+    assert!(
+        !s.redeem_plane_token("ask", "edge", 5_000, 1_000).unwrap(),
+        "the sweep dropped a row that is still spent"
+    );
+}
+
+fn events_of(s: &MemoryStore, task: &str) -> usize {
+    s.list_plane_records("task_event", &PlaneSelector::Parent(task.into()))
+        .unwrap()
+        .len()
+}
+
+/// Deleting a task takes its `task_event` chain with it, and only that task's.
+#[test]
+fn deleting_a_task_deletes_its_event_chain() {
+    let s = MemoryStore::new();
+    for t in ["t1", "t2"] {
+        s.upsert_plane_record(plane_task(t, PlaneDisposition::Active).view())
+            .unwrap();
+        for seq in 1..=2 {
+            s.append_plane_record(plane_event(t, seq, b"e").view())
+                .unwrap();
+        }
+    }
+    s.delete_plane_record("task", "t1").unwrap();
+    assert!(s.get_plane_record("task", "t1").unwrap().is_none());
+    assert_eq!(events_of(&s, "t1"), 0, "the task's events outlived it");
+    assert_eq!(events_of(&s, "t2"), 2);
+    assert!(s.get_plane_record("task", "t2").unwrap().is_some());
+}
+
+/// A purge of `task` takes each purged task's event chain, under either retention; the count is
+/// the task rows only, and a task that stays keeps its events.
+#[test]
+fn purging_tasks_takes_their_event_chains() {
+    for retention in [Retention::Age, Retention::TerminalOnly] {
+        let s = MemoryStore::new();
+        for (t, ts, disposition) in [
+            ("gone", 5, PlaneDisposition::Terminal),
+            ("fresh", 50, PlaneDisposition::Terminal),
+            ("active", 5, PlaneDisposition::Active),
+        ] {
+            let mut task = plane_task(t, disposition);
+            task.ts = ts;
+            s.upsert_plane_record(task.view()).unwrap();
+            for seq in 1..=2 {
+                s.append_plane_record(plane_event(t, seq, b"e").view())
+                    .unwrap();
+            }
+        }
+        let expect_active_gone = retention == Retention::Age;
+        let purged = s.purge_plane_records("task", 10, retention).unwrap();
+        assert_eq!(purged, if expect_active_gone { 2 } else { 1 });
+        assert_eq!(
+            events_of(&s, "gone"),
+            0,
+            "{retention:?}: events outlived their task"
+        );
+        assert_eq!(events_of(&s, "fresh"), 2);
+        assert_eq!(
+            events_of(&s, "active"),
+            if expect_active_gone { 0 } else { 2 }
+        );
+    }
+
+    let s = MemoryStore::new();
+    let mut task = plane_task("t", PlaneDisposition::Terminal);
+    task.ts = 5;
+    s.upsert_plane_record(task.view()).unwrap();
+    s.append_plane_record(plane_event("t", 1, b"e").view())
+        .unwrap();
+    assert_eq!(s.purge_plane_records_before("task", 10).unwrap(), 1);
+    assert_eq!(events_of(&s, "t"), 0);
+}
+
+/// Counters pin at `i64::MAX`, on a put and on accrual, so a row reads back the same in every store.
+#[test]
+fn counters_pin_at_i64_max() {
+    const MAX: u64 = i64::MAX as u64;
+    let s = MemoryStore::new();
+
+    s.put_usage("a", 0, &ledger(u64::MAX, "m", u64::MAX, 7))
+        .unwrap();
+    let u = s.get_usage("a", 0).unwrap();
+    assert_eq!((u.requests, u.billable_requests), (MAX, MAX));
+    assert_eq!((u.total_input(), u.total_output()), (MAX, 7));
+
+    s.put_usage("b", 0, &ledger(MAX - 1, "m", MAX - 1, 0))
+        .unwrap();
+    let d = UsageDelta {
+        requests: 5,
+        billable_requests: 5,
+        models: vec![busbar_contract::records::ModelTokensDelta {
+            model: "m".to_string(),
+            usage_units: [(busbar_contract::records::UNIT_INPUT.to_string(), 5i64)]
+                .into_iter()
+                .collect(),
+        }],
+    };
+    s.add_usage("b", 0, &d).unwrap();
+    let u = s.get_usage("b", 0).unwrap();
+    assert_eq!(
+        (u.requests, u.billable_requests, u.total_input()),
+        (MAX, MAX, MAX)
+    );
+
+    let m = MeteringDelta {
+        usage_units: [("open".to_string(), u64::MAX)].into_iter().collect(),
+        key_id: "a".to_string(),
+        bucket: 7,
+        model: "m".to_string(),
+        provider: "p".to_string(),
+        tokens_input: u64::MAX,
+        tokens_output: MAX,
+        tokens_cache_read: 1,
+        tokens_cache_write: 0,
+        requests: u64::MAX,
+        billable_requests: MAX,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+    };
+    s.add_metering(&m).unwrap();
+    s.add_metering(&m).unwrap();
+    let r = &s.list_metering(7).unwrap()[0];
+    assert_eq!(
+        (r.tokens_input, r.tokens_output, r.tokens_cache_read),
+        (MAX, MAX, 2)
+    );
+    assert_eq!((r.requests, r.billable_requests), (MAX, MAX));
+    assert_eq!(r.usage_units["open"], MAX);
+}
+
+/// Listings are deterministic: keys by `(created_at, id)`, a key's credentials by `(kind, slot)`,
+/// keys since a revision by revision.
+#[test]
+fn listings_come_back_in_a_deterministic_order() {
+    let s = MemoryStore::new();
+    let ids: Vec<String> = (0..24).rev().map(|i| format!("k{i:02}")).collect();
+    for (n, id) in ids.iter().enumerate() {
+        let mut k = key(id);
+        k.created_at = (n / 8) as u64;
+        s.put_key(&k).unwrap();
+    }
+    let listed: Vec<(u64, String)> = s
+        .list_keys()
+        .unwrap()
+        .into_iter()
+        .map(|k| (k.created_at, k.id))
+        .collect();
+    let sorted = {
+        let mut w = listed.clone();
+        w.sort();
+        w
+    };
+    assert_eq!(listed, sorted, "list_keys is not (created_at, id) ordered");
+
+    let since: Vec<String> = s
+        .list_keys_since(0)
+        .unwrap()
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    assert_eq!(since, ids, "list_keys_since is not in revision order");
+
+    for (n, (kind, slot)) in [("b", 2u8), ("a", 5), ("b", 0), ("a", 1), ("c", 0)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut c = credential(&format!("c{n}"), "k00", &format!("P{n}"));
+        c.meta.kind = kind.to_string();
+        c.meta.slot = slot;
+        s.put_credential(&c).unwrap();
+    }
+    let got: Vec<(String, u8)> = s
+        .list_credentials("k00")
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.kind, c.slot))
+        .collect();
+    let want: Vec<(String, u8)> = [("a", 1), ("a", 5), ("b", 0), ("b", 2), ("c", 0)]
+        .into_iter()
+        .map(|(k, s)| (k.to_string(), s))
+        .collect();
+    assert_eq!(got, want);
 }
