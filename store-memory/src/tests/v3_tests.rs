@@ -232,6 +232,117 @@ fn a_failed_append_does_not_record_its_op_id() {
     assert_eq!(rows, vec![b"a".to_vec(), b"b".to_vec()]);
 }
 
+fn metering(priced_from_ms: u64) -> MeteringDelta {
+    MeteringDelta {
+        key_id: "k".into(),
+        bucket: 86_400,
+        model: "m".into(),
+        provider: "p".into(),
+        tokens_input: 1,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms,
+        usage_units: Default::default(),
+    }
+}
+
+fn plane(
+    kind: &str,
+    parent: Option<&str>,
+    seq: u64,
+    ts: u64,
+) -> busbar_contract::records::PlaneRecord {
+    busbar_contract::records::PlaneRecord {
+        kind: kind.to_string(),
+        id: "r".to_string(),
+        parent: parent.map(str::to_string),
+        seq,
+        ts,
+        disposition: busbar_contract::records::PlaneDisposition::Active,
+        body: b"b".to_vec(),
+    }
+}
+
+/// A u64 a signed column cannot hold is refused before any write, on the trait methods (an error
+/// naming the method and field) and on the op slots (`OpRefused::Refused`, nothing recorded).
+#[test]
+fn a_value_a_signed_column_cannot_hold_is_refused_before_any_write() {
+    let over = i64::MAX as u64 + 1;
+    let s = MemoryStore::new();
+
+    for (rec, field) in [
+        (plane("task_event", Some("p"), over, 0), "seq"),
+        (plane("task_event", Some("p"), 1, over), "ts"),
+    ] {
+        let e = s.append_plane_record(rec.view()).expect_err("append");
+        assert!(
+            e.0.starts_with(&format!("append_plane_record: {field} {over} exceeds")),
+            "{}",
+            e.0
+        );
+        assert!(matches!(
+            s.v3_append_plane_record_op(op(1), rec.view()),
+            Err(OpRefused::Refused(_))
+        ));
+    }
+    for (rec, field) in [
+        (plane("task", None, over, 0), "seq"),
+        (plane("task", None, 0, over), "ts"),
+    ] {
+        let e = s.upsert_plane_record(rec.view()).expect_err("upsert");
+        assert!(
+            e.0.starts_with(&format!("upsert_plane_record: {field} {over} exceeds")),
+            "{}",
+            e.0
+        );
+    }
+    assert!(s.get_plane_record("task", "r").unwrap().is_none());
+    assert!(s
+        .list_plane_records("task_event", &PlaneSelector::All)
+        .unwrap()
+        .is_empty());
+    // The refused op_id was never recorded: it is still free.
+    s.v3_append_plane_record_op(op(1), plane("task_event", Some("p"), 1, 1).view())
+        .expect("op id reusable");
+
+    let e = s.add_metering(&metering(over)).expect_err("metering");
+    assert!(
+        e.0.starts_with(&format!("add_metering: priced_from_ms {over} exceeds")),
+        "{}",
+        e.0
+    );
+    assert!(matches!(
+        s.v3_add_metering_batch(op(2), &[metering(1), metering(over)]),
+        Err(OpRefused::Refused(_))
+    ));
+    assert!(
+        s.list_metering(86_400).unwrap().is_empty(),
+        "a refused batch applied part of itself"
+    );
+    s.v3_add_metering_batch(op(2), &[metering(1)])
+        .expect("op id reusable");
+
+    for (exp, now, field) in [(over, 0, "expires_at"), (0, over, "now")] {
+        let e = s
+            .redeem_plane_token("ask", "n", exp, now)
+            .expect_err("redeem");
+        assert!(
+            e.0.starts_with(&format!("redeem_plane_token: {field} {over} exceeds")),
+            "{}",
+            e.0
+        );
+    }
+    assert!(
+        s.redeem_plane_token("ask", "n", 10, 0).unwrap(),
+        "nothing was spent"
+    );
+}
+
 /// The host's explicit usage purge removes only windows strictly before its cutoff; the all-time
 /// ledger, cutoff equality, future windows and billing history survive.
 #[test]

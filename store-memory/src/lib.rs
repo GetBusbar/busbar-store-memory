@@ -12,14 +12,15 @@
 
 #![forbid(unsafe_code)]
 
+use busbar_contract::abi::sdk::store::column::{self, storable_i64};
 use busbar_contract::abi::sdk::store::fork;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
-    UsageLedger, VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, SecretForm,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,6 +45,10 @@ type MeteringKey = (String, u64, String, String, u64);
 /// A plane record's key: `(kind, identity, seq)`.
 type PlaneKey = (String, String, u64);
 
+/// The plane kind whose rows own a chain of [`TASK_EVENT_KIND`] rows (parent = the task id).
+const TASK_KIND: &str = "task";
+const TASK_EVENT_KIND: &str = "task_event";
+
 /// The `seq` an upserted plane record is stored at (it is keyed by `(kind, id)`).
 const UPSERT_SEQ: u64 = 0;
 
@@ -52,6 +57,31 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The plane record's `seq` and `ts` must fit the signed column a durable store keeps them in.
+pub(crate) fn check_plane(method: &str, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+    storable_i64(method, "seq", record.seq)?;
+    storable_i64(method, "ts", record.ts)?;
+    Ok(())
+}
+
+/// A metering delta's `priced_from_ms` is part of its key and must fit the signed column.
+pub(crate) fn check_metering(method: &str, d: &MeteringDelta) -> StoreResult<()> {
+    storable_i64(method, "priced_from_ms", d.priced_from_ms).map(drop)
+}
+
+/// A counter as a signed 64-bit column would hold it: above `i64::MAX` pins there.
+fn pin(v: u64) -> u64 {
+    column::read_u64(column::clamp(v))
+}
+
+fn pin_ledger(ledger: &mut UsageLedger) {
+    ledger.requests = pin(ledger.requests);
+    ledger.billable_requests = pin(ledger.billable_requests);
+    for m in &mut ledger.models {
+        m.usage_units.values_mut().for_each(|n| *n = pin(*n));
+    }
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -190,13 +220,32 @@ impl MemoryStore {
         (record.kind.to_string(), record.id.to_string(), UPSERT_SEQ)
     }
 
-    /// The two credential-table preconditions, shared by `put_credential` and the atomic
-    /// `put_key_with_credential`.
+    /// The credential-table preconditions, shared by `put_credential` and the atomic
+    /// `put_key_with_credential`. `Ok(true)`: the identical live credential is already stored
+    /// (revision aside), so the caller writes nothing.
     fn credential_preconditions(
+        op: &str,
         creds: &HashMap<String, CredentialSecret>,
         secret: &CredentialSecret,
-    ) -> StoreResult<()> {
+    ) -> StoreResult<bool> {
         let meta = &secret.meta;
+        if let Some(stored) = creds.get(&meta.id) {
+            if stored.meta.revoked_at.is_some() {
+                return Err(StoreError(format!(
+                    "{op}: credential '{}' is revoked; a revoked credential is never re-minted",
+                    meta.id
+                )));
+            }
+            let mut offered = secret.clone();
+            offered.meta.revision = stored.meta.revision;
+            if offered == *stored {
+                return Ok(true);
+            }
+            return Err(StoreError(format!(
+                "{op}: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                stored.meta.slot, stored.meta.key_id, stored.meta.kind
+            )));
+        }
         // An explicit slot pointed at a LIVE credential of the same (key_id, kind) would silently
         // clobber a working credential mid-overlap-window.
         let occupied = creds.values().any(|c| {
@@ -208,7 +257,7 @@ impl MemoryStore {
         });
         if occupied {
             return Err(StoreError(format!(
-                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                "{op}: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
                 meta.slot, meta.key_id, meta.kind
             )));
         }
@@ -224,11 +273,11 @@ impl MemoryStore {
         });
         if public_id_taken {
             return Err(StoreError(format!(
-                "put_credential: public_id '{}' is already in use for kind '{}'",
+                "{op}: public_id '{}' is already in use for kind '{}'",
                 meta.public_id, meta.kind
             )));
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Insert `secret`, replacing a REVOKED row in the same `(key_id, kind, slot)` (the contract
@@ -276,17 +325,16 @@ impl Store for MemoryStore {
     /// Unfiltered: tombstones are included, since the default `list_keys_since` needs them.
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         let mut v: Vec<VirtualKey> = read(&self.keys).values().cloned().collect();
-        v.sort_by_key(|k| k.created_at);
+        v.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         Ok(v)
     }
 
     fn delete_key(&self, id: &str) -> StoreResult<()> {
         // TOMBSTONE: the key row survives (billing and audit attribution keep resolving, the id is
-        // never reissued); only its credentials and `usage` ledger go. All three write guards are
-        // held for the whole cascade, in a fixed order (keys, usage, creds), so a concurrent
-        // `add_usage` cannot resurrect a ledger row in the gap.
+        // never reissued); only its credentials go. Usage and metering are billing evidence and
+        // stay. Both guards are held for the whole cascade, in `put_credential`'s order (keys,
+        // creds).
         let mut keys = write(&self.keys);
-        let mut usage = write(&self.usage);
         let mut creds = write(&self.creds);
         let Some(key) = keys.get_mut(id) else {
             return Err(StoreError(format!("delete_key: unknown id '{id}'")));
@@ -298,17 +346,18 @@ impl Store for MemoryStore {
         key.enabled = false;
         key.deleted_at = Some(self.now());
         key.revision = rev;
-        usage.retain(|(k, _), _| k != id);
         creds.retain(|_, c| c.meta.key_id != id);
         Ok(())
     }
 
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
-        Ok(read(&self.keys)
+        let mut v: Vec<VirtualKey> = read(&self.keys)
             .values()
             .filter(|k| k.revision > since)
             .cloned()
-            .collect())
+            .collect();
+        v.sort_by_key(|k| k.revision);
+        Ok(v)
     }
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
@@ -324,16 +373,19 @@ impl Store for MemoryStore {
         window_start: u64,
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
-        write(&self.usage).insert((bucket_id.to_string(), window_start), ledger.clone());
+        let mut ledger = ledger.clone();
+        pin_ledger(&mut ledger);
+        write(&self.usage).insert((bucket_id.to_string(), window_start), ledger);
         Ok(())
     }
 
     fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
         let mut usage = write(&self.usage);
-        usage
+        let ledger = usage
             .entry((bucket_id.to_string(), window_start))
-            .or_default()
-            .apply_delta(delta);
+            .or_default();
+        ledger.apply_delta(delta);
+        pin_ledger(ledger);
 
         // Only this hot path sweeps; `put_usage` (absolute set) does not.
         if sweep_due(&self.usage_sweep_ticker) {
@@ -347,6 +399,7 @@ impl Store for MemoryStore {
     }
 
     fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        check_metering("add_metering", d)?;
         let mut m = write(&self.metering);
         // `priced_from_ms` is part of the key: a rate-card edit inside a UTC day opens a second row
         // so each half keeps the card it was earned under.
@@ -373,15 +426,15 @@ impl Store for MemoryStore {
                 priced_from_ms: d.priced_from_ms,
                 usage_units: BTreeMap::new(),
             });
-        e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
-        e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
-        e.tokens_cache_read = e.tokens_cache_read.saturating_add(d.tokens_cache_read);
-        e.tokens_cache_write = e.tokens_cache_write.saturating_add(d.tokens_cache_write);
-        e.requests = e.requests.saturating_add(d.requests);
-        e.billable_requests = e.billable_requests.saturating_add(d.billable_requests);
+        e.tokens_input = pin(e.tokens_input.saturating_add(d.tokens_input));
+        e.tokens_output = pin(e.tokens_output.saturating_add(d.tokens_output));
+        e.tokens_cache_read = pin(e.tokens_cache_read.saturating_add(d.tokens_cache_read));
+        e.tokens_cache_write = pin(e.tokens_cache_write.saturating_add(d.tokens_cache_write));
+        e.requests = pin(e.requests.saturating_add(d.requests));
+        e.billable_requests = pin(e.billable_requests.saturating_add(d.billable_requests));
         for (class, n) in &d.usage_units {
             let cur = e.usage_units.entry(class.clone()).or_insert(0);
-            *cur = cur.saturating_add(*n);
+            *cur = pin(cur.saturating_add(*n));
         }
 
         if sweep_due(&self.metering_sweep_ticker) {
@@ -418,7 +471,9 @@ impl Store for MemoryStore {
                 secret.meta.key_id
             )));
         }
-        Self::credential_preconditions(&creds, secret)?;
+        if Self::credential_preconditions("put_credential", &creds, secret)? {
+            return Ok(());
+        }
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         Self::insert_credential(&mut creds, secret);
@@ -454,11 +509,14 @@ impl Store for MemoryStore {
                 secret.meta.key_id, key.id
             )));
         }
-        Self::credential_preconditions(&creds, secret)?;
+        let unchanged = Self::credential_preconditions("put_key_with_credential", &creds, secret)?;
 
         let mut key = key.clone();
         key.revision = self.next_revision();
         keys.insert(key.id.clone(), key);
+        if unchanged {
+            return Ok(());
+        }
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         Self::insert_credential(&mut creds, secret);
@@ -466,11 +524,13 @@ impl Store for MemoryStore {
     }
 
     fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
-        Ok(read(&self.creds)
+        let mut v: Vec<CredentialMeta> = read(&self.creds)
             .values()
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
-            .collect())
+            .collect();
+        v.sort_by(|a, b| (&a.kind, a.slot).cmp(&(&b.kind, b.slot)));
+        Ok(v)
     }
 
     fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
@@ -482,6 +542,8 @@ impl Store for MemoryStore {
         if c.meta.revoked_at.is_none() {
             c.meta.revoked_at = Some(self.now());
             c.meta.revoke_reason = Some(reason.to_string());
+            c.meta.secret_form = SecretForm::None;
+            c.secret.clear();
             c.meta.revision = self.next_revision();
         }
         Ok(())
@@ -523,6 +585,7 @@ impl Store for MemoryStore {
     }
 
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+        check_plane("upsert_plane_record", record)?;
         write(&self.plane_records).insert(Self::upsert_key(record), record.to_record());
         Ok(())
     }
@@ -534,6 +597,7 @@ impl Store for MemoryStore {
     }
 
     fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+        check_plane("append_plane_record", record)?;
         // Append-only with the same fork rule as `append_audit`: identical is a retry, different
         // at an occupied `(parent, seq)` is a second writer forking the chain.
         let mut records = write(&self.plane_records);
@@ -602,22 +666,35 @@ impl Store for MemoryStore {
         retention: Retention,
     ) -> StoreResult<u64> {
         let mut records = write(&self.plane_records);
-        let before_len = records.len();
-        records.retain(|(k, _, _), r| {
+        let mut purged = 0u64;
+        let mut tasks = HashSet::new();
+        records.retain(|(k, i, _), r| {
             let goes = k == kind
                 && r.ts < before
                 && match retention {
                     Retention::Age => true,
                     Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
                 };
+            if goes {
+                purged += 1;
+                if kind == TASK_KIND {
+                    tasks.insert(i.clone());
+                }
+            }
             !goes
         });
-        Ok((before_len - records.len()) as u64)
+        if !tasks.is_empty() {
+            records.retain(|(k, i, _), _| !(k == TASK_EVENT_KIND && tasks.contains(i)));
+        }
+        Ok(purged)
     }
 
-    /// Absent is a no-op; every `seq` under the identity goes.
+    /// Absent is a no-op; every `seq` under the identity goes, and a task takes its `task_event`
+    /// chain with it.
     fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
-        write(&self.plane_records).retain(|(k, i, _), _| !(k == kind && i == id));
+        write(&self.plane_records).retain(|(k, i, _), _| {
+            !(i == id && (k == kind || (kind == TASK_KIND && k == TASK_EVENT_KIND)))
+        });
         Ok(())
     }
 
@@ -628,12 +705,14 @@ impl Store for MemoryStore {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool> {
+        storable_i64("redeem_plane_token", "expires_at", expires_at)?;
+        storable_i64("redeem_plane_token", "now", now)?;
         // Put-if-absent under one guard (the trait default would make every approval replayable): a
-        // live row answers `false` and is left as it is; a lapsed row is a new claim.
+        // row with `expires_at >= now` answers `false` and is left as it is; a lapsed row is a new claim.
         let mut spent = write(&self.plane_tokens);
         let first = match spent.entry((kind.to_string(), token.to_string())) {
             std::collections::hash_map::Entry::Occupied(mut row) => {
-                let lapsed = *row.get() <= now;
+                let lapsed = *row.get() < now;
                 if lapsed {
                     row.insert(expires_at);
                 }
@@ -645,13 +724,13 @@ impl Store for MemoryStore {
             }
         };
         if sweep_due(&self.tokens_sweep_ticker) {
-            spent.retain(|_, exp| *exp > now);
+            spent.retain(|_, exp| *exp >= now);
         }
         Ok(first)
     }
 
     /// Multi-use and SPENDS NOTHING: a plain read of the `(kind, token)` upsert record, live while
-    /// it is present, `Active`, and `now` has not reached `expires_at`.
+    /// it is present, `Active`, and `now` has not passed `expires_at`.
     fn plane_token_live(
         &self,
         kind: &str,
@@ -661,7 +740,7 @@ impl Store for MemoryStore {
     ) -> StoreResult<bool> {
         Ok(read(&self.plane_records)
             .get(&(kind.to_string(), token.to_string(), UPSERT_SEQ))
-            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
+            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now <= expires_at))
     }
 }
 
@@ -679,7 +758,7 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
         serde_json::Value::Object(m) => match m.keys().find(|k| *k != "token") {
             None => Ok(()),
             Some(k) => Err(format!(
-                "invalid memory plugin config: unknown setting `{k}` (the memory store takes no settings)"
+                "invalid memory plugin config: unknown setting `{k}` (accepted: token)"
             )),
         },
         other => {
