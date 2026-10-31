@@ -193,6 +193,7 @@ impl MemoryStore {
     /// The two credential-table preconditions, shared by `put_credential` and the atomic
     /// `put_key_with_credential`.
     fn credential_preconditions(
+        op: &str,
         creds: &HashMap<String, CredentialSecret>,
         secret: &CredentialSecret,
     ) -> StoreResult<()> {
@@ -208,7 +209,7 @@ impl MemoryStore {
         });
         if occupied {
             return Err(StoreError(format!(
-                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                "{op}: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
                 meta.slot, meta.key_id, meta.kind
             )));
         }
@@ -224,7 +225,7 @@ impl MemoryStore {
         });
         if public_id_taken {
             return Err(StoreError(format!(
-                "put_credential: public_id '{}' is already in use for kind '{}'",
+                "{op}: public_id '{}' is already in use for kind '{}'",
                 meta.public_id, meta.kind
             )));
         }
@@ -418,7 +419,7 @@ impl Store for MemoryStore {
                 secret.meta.key_id
             )));
         }
-        Self::credential_preconditions(&creds, secret)?;
+        Self::credential_preconditions("put_credential", &creds, secret)?;
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         Self::insert_credential(&mut creds, secret);
@@ -454,7 +455,7 @@ impl Store for MemoryStore {
                 secret.meta.key_id, key.id
             )));
         }
-        Self::credential_preconditions(&creds, secret)?;
+        Self::credential_preconditions("put_key_with_credential", &creds, secret)?;
 
         let mut key = key.clone();
         key.revision = self.next_revision();
