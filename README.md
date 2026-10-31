@@ -18,7 +18,20 @@ Everything it holds is in RAM and lost on restart, and its RAM grows with the re
 
 ## Config
 
-Configured under the `memory` module name. The store takes no settings except an ignored `token`.
+Configured under the `memory` module name.
+
+| setting | type | default | meaning |
+|---|---|---|---|
+| `token` | any | absent | accepted and ignored (a 1.5.5 config key; it may hold a secret reference) |
+
+The store takes no other settings: an empty value, `null` and `{}` all mean none, and any other
+key is refused (``unknown setting `k` (accepted: token)``).
+
+## Versioning
+
+This plugin is versioned independently of busbar: **v1.6.0** here, and it requires **busbar
+1.6.0+**, the release whose store interface it implements. Nothing is persisted, so there is no
+database to upgrade.
 
 ## Build
 
@@ -31,6 +44,9 @@ cargo build --release -p busbar-store-memory-plugin
 ```bash
 cargo test --workspace --locked
 ```
+
+The store needs no server and no environment variable, so nothing is skipped locally or in CI: a
+failing test fails the build in both.
 
 ## License
 
