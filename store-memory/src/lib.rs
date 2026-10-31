@@ -18,8 +18,8 @@ use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
-    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, UsageDelta,
-    UsageLedger, VirtualKey,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, Retention, SecretForm,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -475,8 +475,7 @@ impl Store for MemoryStore {
                 secret.meta.key_id, key.id
             )));
         }
-        let unchanged =
-            Self::credential_preconditions("put_key_with_credential", &creds, secret)?;
+        let unchanged = Self::credential_preconditions("put_key_with_credential", &creds, secret)?;
 
         let mut key = key.clone();
         key.revision = self.next_revision();
@@ -507,6 +506,8 @@ impl Store for MemoryStore {
         if c.meta.revoked_at.is_none() {
             c.meta.revoked_at = Some(self.now());
             c.meta.revoke_reason = Some(reason.to_string());
+            c.meta.secret_form = SecretForm::None;
+            c.secret.clear();
             c.meta.revision = self.next_revision();
         }
         Ok(())
