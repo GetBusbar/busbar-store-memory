@@ -33,7 +33,7 @@ fn settings_refuse_malformed_json_and_any_key() {
         .unwrap_err();
     assert_eq!(
         e,
-        "invalid memory plugin config: unknown setting `x` (the memory store takes no settings)"
+        "invalid memory plugin config: unknown setting `x` (accepted: token)"
     );
     assert!(
         <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(b"{\"x\": 1}", None)
