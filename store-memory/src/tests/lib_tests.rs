@@ -1778,3 +1778,57 @@ fn counters_pin_at_i64_max() {
     assert_eq!((r.requests, r.billable_requests), (MAX, MAX));
     assert_eq!(r.usage_units["open"], MAX);
 }
+
+/// Listings are deterministic: keys by `(created_at, id)`, a key's credentials by `(kind, slot)`,
+/// keys since a revision by revision.
+#[test]
+fn listings_come_back_in_a_deterministic_order() {
+    let s = MemoryStore::new();
+    let ids: Vec<String> = (0..24).rev().map(|i| format!("k{i:02}")).collect();
+    for (n, id) in ids.iter().enumerate() {
+        let mut k = key(id);
+        k.created_at = (n / 8) as u64;
+        s.put_key(&k).unwrap();
+    }
+    let listed: Vec<(u64, String)> = s
+        .list_keys()
+        .unwrap()
+        .into_iter()
+        .map(|k| (k.created_at, k.id))
+        .collect();
+    let sorted = {
+        let mut w = listed.clone();
+        w.sort();
+        w
+    };
+    assert_eq!(listed, sorted, "list_keys is not (created_at, id) ordered");
+
+    let since: Vec<String> = s
+        .list_keys_since(0)
+        .unwrap()
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    assert_eq!(since, ids, "list_keys_since is not in revision order");
+
+    for (n, (kind, slot)) in [("b", 2u8), ("a", 5), ("b", 0), ("a", 1), ("c", 0)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut c = credential(&format!("c{n}"), "k00", &format!("P{n}"));
+        c.meta.kind = kind.to_string();
+        c.meta.slot = slot;
+        s.put_credential(&c).unwrap();
+    }
+    let got: Vec<(String, u8)> = s
+        .list_credentials("k00")
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.kind, c.slot))
+        .collect();
+    let want: Vec<(String, u8)> = [("a", 1), ("a", 5), ("b", 0), ("b", 2), ("c", 0)]
+        .into_iter()
+        .map(|(k, s)| (k.to_string(), s))
+        .collect();
+    assert_eq!(got, want);
+}
