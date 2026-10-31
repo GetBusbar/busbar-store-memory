@@ -1518,3 +1518,41 @@ fn credential_refusals_name_the_calling_method() {
         "delete_key: unknown id 'nope'"
     );
 }
+
+/// A revoked credential id is never re-minted, by either mint path, in any slot; a NEW id minted
+/// into a revoked occupant's slot reclaims it.
+#[test]
+fn a_revoked_credential_id_is_never_reminted() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c1", "k", "P1")).unwrap();
+    s.revoke_credential("c1", "rotated").unwrap();
+
+    let text = |op: &str| {
+        format!("{op}: credential 'c1' is revoked; a revoked credential is never re-minted")
+    };
+    let mut elsewhere = credential("c1", "k", "P1");
+    elsewhere.meta.slot = 3;
+    for again in [credential("c1", "k", "P1"), elsewhere] {
+        let r = s.put_credential(&again);
+        assert_eq!(
+            r.expect_err("a revoked id was re-minted").0,
+            text("put_credential")
+        );
+        let r = s.put_key_with_credential(&key("k"), &again);
+        assert_eq!(
+            r.expect_err("a revoked id was re-minted").0,
+            text("put_key_with_credential")
+        );
+    }
+    let kept = s.list_credentials("k").unwrap();
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].revoked_at.is_some(), "the revoked row was rewritten");
+
+    let mut fresh = credential("c2", "k", "P2");
+    fresh.meta.created_at = 77;
+    s.put_credential(&fresh).unwrap();
+    let rows = s.list_credentials("k").unwrap();
+    assert_eq!(rows.len(), 1, "the new id reclaims the slot");
+    assert_eq!((rows[0].id.as_str(), rows[0].created_at), ("c2", 77));
+}
