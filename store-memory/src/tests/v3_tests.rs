@@ -251,7 +251,12 @@ fn metering(priced_from_ms: u64) -> MeteringDelta {
     }
 }
 
-fn plane(kind: &str, parent: Option<&str>, seq: u64, ts: u64) -> busbar_contract::records::PlaneRecord {
+fn plane(
+    kind: &str,
+    parent: Option<&str>,
+    seq: u64,
+    ts: u64,
+) -> busbar_contract::records::PlaneRecord {
     busbar_contract::records::PlaneRecord {
         kind: kind.to_string(),
         id: "r".to_string(),
@@ -332,5 +337,8 @@ fn a_value_a_signed_column_cannot_hold_is_refused_before_any_write() {
             e.0
         );
     }
-    assert!(s.redeem_plane_token("ask", "n", 10, 0).unwrap(), "nothing was spent");
+    assert!(
+        s.redeem_plane_token("ask", "n", 10, 0).unwrap(),
+        "nothing was spent"
+    );
 }

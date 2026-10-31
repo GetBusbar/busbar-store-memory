@@ -94,6 +94,10 @@ impl State {
     }
 }
 
+fn refused(e: busbar_contract::records::RecordStoreError) -> OpRefused {
+    OpRefused::Refused(e.0)
+}
+
 fn failed(e: busbar_contract::records::RecordStoreError) -> OpRefused {
     OpRefused::Failed(e.0)
 }
@@ -127,6 +131,7 @@ impl MemoryStore {
         op: OpId,
         record: PlaneRecordRef<'_>,
     ) -> OpResult<()> {
+        crate::check_plane("append_plane_record", record).map_err(refused)?;
         self.deduped(op, Dedupe::append(record), |s| {
             s.append_plane_record(record)
         })
@@ -191,6 +196,10 @@ impl MemoryStore {
     }
 
     pub(crate) fn v3_add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
+        deltas
+            .iter()
+            .try_for_each(|d| crate::check_metering("add_metering_batch", d))
+            .map_err(refused)?;
         self.deduped(op, Dedupe::metering(deltas), |s| {
             deltas.iter().try_for_each(|d| s.add_metering(d))
         })

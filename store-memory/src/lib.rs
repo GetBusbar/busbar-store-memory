@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+use busbar_contract::abi::sdk::store::column::storable_i64;
 use busbar_contract::abi::sdk::store::fork;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
@@ -56,6 +57,18 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The plane record's `seq` and `ts` must fit the signed column a durable store keeps them in.
+pub(crate) fn check_plane(method: &str, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+    storable_i64(method, "seq", record.seq)?;
+    storable_i64(method, "ts", record.ts)?;
+    Ok(())
+}
+
+/// A metering delta's `priced_from_ms` is part of its key and must fit the signed column.
+pub(crate) fn check_metering(method: &str, d: &MeteringDelta) -> StoreResult<()> {
+    storable_i64(method, "priced_from_ms", d.priced_from_ms).map(drop)
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -368,6 +381,7 @@ impl Store for MemoryStore {
     }
 
     fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        check_metering("add_metering", d)?;
         let mut m = write(&self.metering);
         // `priced_from_ms` is part of the key: a rate-card edit inside a UTC day opens a second row
         // so each half keeps the card it was earned under.
@@ -551,6 +565,7 @@ impl Store for MemoryStore {
     }
 
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+        check_plane("upsert_plane_record", record)?;
         write(&self.plane_records).insert(Self::upsert_key(record), record.to_record());
         Ok(())
     }
@@ -562,6 +577,7 @@ impl Store for MemoryStore {
     }
 
     fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
+        check_plane("append_plane_record", record)?;
         // Append-only with the same fork rule as `append_audit`: identical is a retry, different
         // at an occupied `(parent, seq)` is a second writer forking the chain.
         let mut records = write(&self.plane_records);
@@ -669,6 +685,8 @@ impl Store for MemoryStore {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool> {
+        storable_i64("redeem_plane_token", "expires_at", expires_at)?;
+        storable_i64("redeem_plane_token", "now", now)?;
         // Put-if-absent under one guard (the trait default would make every approval replayable): a
         // row with `expires_at >= now` answers `false` and is left as it is; a lapsed row is a new claim.
         let mut spent = write(&self.plane_tokens);

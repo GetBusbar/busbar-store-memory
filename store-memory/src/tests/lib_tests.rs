@@ -1699,9 +1699,16 @@ fn purging_tasks_takes_their_event_chains() {
         let expect_active_gone = retention == Retention::Age;
         let purged = s.purge_plane_records("task", 10, retention).unwrap();
         assert_eq!(purged, if expect_active_gone { 2 } else { 1 });
-        assert_eq!(events_of(&s, "gone"), 0, "{retention:?}: events outlived their task");
+        assert_eq!(
+            events_of(&s, "gone"),
+            0,
+            "{retention:?}: events outlived their task"
+        );
         assert_eq!(events_of(&s, "fresh"), 2);
-        assert_eq!(events_of(&s, "active"), if expect_active_gone { 0 } else { 2 });
+        assert_eq!(
+            events_of(&s, "active"),
+            if expect_active_gone { 0 } else { 2 }
+        );
     }
 
     let s = MemoryStore::new();
