@@ -1676,3 +1676,40 @@ fn deleting_a_task_deletes_its_event_chain() {
     assert_eq!(events_of(&s, "t2"), 2);
     assert!(s.get_plane_record("task", "t2").unwrap().is_some());
 }
+
+/// A purge of `task` takes each purged task's event chain, under either retention; the count is
+/// the task rows only, and a task that stays keeps its events.
+#[test]
+fn purging_tasks_takes_their_event_chains() {
+    for retention in [Retention::Age, Retention::TerminalOnly] {
+        let s = MemoryStore::new();
+        for (t, ts, disposition) in [
+            ("gone", 5, PlaneDisposition::Terminal),
+            ("fresh", 50, PlaneDisposition::Terminal),
+            ("active", 5, PlaneDisposition::Active),
+        ] {
+            let mut task = plane_task(t, disposition);
+            task.ts = ts;
+            s.upsert_plane_record(task.view()).unwrap();
+            for seq in 1..=2 {
+                s.append_plane_record(plane_event(t, seq, b"e").view())
+                    .unwrap();
+            }
+        }
+        let expect_active_gone = retention == Retention::Age;
+        let purged = s.purge_plane_records("task", 10, retention).unwrap();
+        assert_eq!(purged, if expect_active_gone { 2 } else { 1 });
+        assert_eq!(events_of(&s, "gone"), 0, "{retention:?}: events outlived their task");
+        assert_eq!(events_of(&s, "fresh"), 2);
+        assert_eq!(events_of(&s, "active"), if expect_active_gone { 0 } else { 2 });
+    }
+
+    let s = MemoryStore::new();
+    let mut task = plane_task("t", PlaneDisposition::Terminal);
+    task.ts = 5;
+    s.upsert_plane_record(task.view()).unwrap();
+    s.append_plane_record(plane_event("t", 1, b"e").view())
+        .unwrap();
+    assert_eq!(s.purge_plane_records_before("task", 10).unwrap(), 1);
+    assert_eq!(events_of(&s, "t"), 0);
+}
