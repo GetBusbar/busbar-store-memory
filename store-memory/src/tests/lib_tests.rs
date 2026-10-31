@@ -1556,3 +1556,43 @@ fn a_revoked_credential_id_is_never_reminted() {
     assert_eq!(rows.len(), 1, "the new id reclaims the slot");
     assert_eq!((rows[0].id.as_str(), rows[0].created_at), ("c2", 77));
 }
+
+/// Re-putting a live credential: identical content (revision aside) is Ok and writes nothing;
+/// different content is refused, naming the slot it holds.
+#[test]
+fn reputting_a_live_credential_is_idempotent_or_refused() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    let c = credential("c1", "k", "P1");
+    s.put_credential(&c).unwrap();
+    let stored = s.list_credentials("k").unwrap()[0].revision;
+
+    s.put_credential(&c).unwrap();
+    s.put_key_with_credential(&key("k"), &c).unwrap();
+    assert_eq!(
+        s.list_credentials("k").unwrap()[0].revision,
+        stored,
+        "an identical re-put wrote"
+    );
+
+    let text = |op: &str| {
+        format!("{op}: slot 0 for key 'k' kind 'generic' holds a live credential; revoke it first")
+    };
+    let mut changed = c.clone();
+    changed.secret = "v1:plain:other".to_string();
+    assert_eq!(
+        s.put_credential(&changed).expect_err("changed secret").0,
+        text("put_credential")
+    );
+    assert_eq!(
+        s.put_key_with_credential(&key("k"), &changed)
+            .expect_err("changed secret")
+            .0,
+        text("put_key_with_credential")
+    );
+    let mut moved = c.clone();
+    moved.meta.public_id = "P9".to_string();
+    assert!(s.put_credential(&moved).is_err());
+    let row = s.lookup_credential_secret("generic", "P1").unwrap().unwrap();
+    assert_eq!(row.secret, "v1:plain:sek", "a refused re-put changed the row");
+}
