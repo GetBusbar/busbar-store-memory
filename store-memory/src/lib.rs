@@ -44,6 +44,10 @@ type MeteringKey = (String, u64, String, String, u64);
 /// A plane record's key: `(kind, identity, seq)`.
 type PlaneKey = (String, String, u64);
 
+/// The plane kind whose rows own a chain of [`TASK_EVENT_KIND`] rows (parent = the task id).
+const TASK_KIND: &str = "task";
+const TASK_EVENT_KIND: &str = "task_event";
+
 /// The `seq` an upserted plane record is stored at (it is keyed by `(kind, id)`).
 const UPSERT_SEQ: u64 = 0;
 
@@ -639,9 +643,12 @@ impl Store for MemoryStore {
         Ok((before_len - records.len()) as u64)
     }
 
-    /// Absent is a no-op; every `seq` under the identity goes.
+    /// Absent is a no-op; every `seq` under the identity goes, and a task takes its `task_event`
+    /// chain with it.
     fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
-        write(&self.plane_records).retain(|(k, i, _), _| !(k == kind && i == id));
+        write(&self.plane_records).retain(|(k, i, _), _| {
+            !(i == id && (k == kind || (kind == TASK_KIND && k == TASK_EVENT_KIND)))
+        });
         Ok(())
     }
 
