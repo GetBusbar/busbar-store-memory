@@ -758,7 +758,7 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
         serde_json::Value::Object(m) => match m.keys().find(|k| *k != "token") {
             None => Ok(()),
             Some(k) => Err(format!(
-                "invalid memory plugin config: unknown setting `{k}` (the memory store takes no settings)"
+                "invalid memory plugin config: unknown setting `{k}` (accepted: token)"
             )),
         },
         other => {
