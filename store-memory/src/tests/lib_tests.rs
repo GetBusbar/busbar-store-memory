@@ -1596,3 +1596,26 @@ fn reputting_a_live_credential_is_idempotent_or_refused() {
     let row = s.lookup_credential_secret("generic", "P1").unwrap().unwrap();
     assert_eq!(row.secret, "v1:plain:sek", "a refused re-put changed the row");
 }
+
+/// Revoking destroys the secret material: the revoked row keeps its metadata, loses its secret and
+/// its form; a repeat revoke is a no-op.
+#[test]
+fn revoke_credential_destroys_the_secret() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_credential(&credential("c", "k", "P")).unwrap();
+    let minted = s.list_credentials("k").unwrap()[0].revision;
+    s.pin_clock(1_000);
+    s.revoke_credential("c", "leaked").unwrap();
+
+    let rows = s.list_credentials_since(minted).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].secret, "", "the secret outlived its revoke");
+    assert_eq!(rows[0].meta.secret_form, SecretForm::None);
+    assert_eq!(rows[0].meta.revoked_at, Some(1_000));
+    assert_eq!(rows[0].meta.revoke_reason.as_deref(), Some("leaked"));
+    assert!(rows[0].meta.revision > minted);
+
+    s.revoke_credential("c", "again").unwrap();
+    assert_eq!(s.list_credentials_since(minted).unwrap(), rows);
+}
