@@ -800,7 +800,7 @@ fn a_losing_redemption_leaves_the_winners_expiry() {
     assert!(s.redeem_plane_token("ask", "n3", 100, 0).unwrap());
     assert!(!s.redeem_plane_token("ask", "n3", 5_000, 50).unwrap());
     assert!(
-        s.redeem_plane_token("ask", "n3", 6_000, 100).unwrap(),
+        s.redeem_plane_token("ask", "n3", 6_000, 101).unwrap(),
         "a lapsed claim stays blocked by a loser's expiry"
     );
 }
@@ -1625,4 +1625,29 @@ fn revoke_credential_destroys_the_secret() {
 
     s.revoke_credential("c", "again").unwrap();
     assert_eq!(s.list_credentials_since(minted).unwrap(), rows);
+}
+
+/// A stored entry is spent while its `expires_at >= now` (the caller's `now`); only `expires_at <
+/// now` is lapsed. The amortised sweep drops the same rows and no others.
+#[test]
+fn a_redeemed_token_is_spent_through_its_expiry_second() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 100, 0).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n1", 500, 99).unwrap());
+    assert!(
+        !s.redeem_plane_token("ask", "n1", 500, 100).unwrap(),
+        "spent at now == expires_at"
+    );
+    assert!(s.redeem_plane_token("ask", "n1", 500, 101).unwrap());
+
+    assert!(s.redeem_plane_token("ask", "edge", 1_000, 0).unwrap());
+    for i in 0..SWEEP_INTERVAL {
+        assert!(s
+            .redeem_plane_token("ask", &format!("m{i}"), 5_000, 1_000)
+            .unwrap());
+    }
+    assert!(
+        !s.redeem_plane_token("ask", "edge", 5_000, 1_000).unwrap(),
+        "the sweep dropped a row that is still spent"
+    );
 }
