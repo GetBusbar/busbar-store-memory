@@ -51,3 +51,5 @@ failing test fails the build in both.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+Usage windows at least 31 days old are purged; window `0` is the all-time ledger and is retained. The host can request a strict cutoff through the usage-purge slot. Billing metering rows are retained for the life of this store; operators own billing-history retention. This backend is ephemeral: restarting or discarding it loses all rows. Use a durable store when history must survive a restart.

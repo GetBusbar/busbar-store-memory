@@ -14,8 +14,9 @@ fn settings_accept_empty_whitespace_null_and_empty_object() {
             "{ok:?}"
         );
         assert!(
-            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(
+            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open_with_secrets(
                 ok.as_bytes(),
+                &[],
                 None
             )
             .is_ok(),
@@ -36,8 +37,12 @@ fn settings_refuse_malformed_json_and_any_key() {
         "invalid memory plugin config: unknown setting `x` (accepted: token)"
     );
     assert!(
-        <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(b"{\"x\": 1}", None)
-            .is_err()
+        <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open_with_secrets(
+            b"{\"x\": 1}",
+            &[],
+            None
+        )
+        .is_err()
     );
     let e = <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(b"[1]")
         .unwrap_err();
@@ -59,8 +64,9 @@ fn settings_accept_and_ignore_a_token() {
             "{ok}"
         );
         assert!(
-            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open(
+            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open_with_secrets(
                 ok.as_bytes(),
+                &[],
                 None
             )
             .is_ok(),

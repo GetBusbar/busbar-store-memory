@@ -419,10 +419,9 @@ fn add_usage_sweep_keeps_the_all_time_window() {
     );
 }
 
-/// Regression: `metering` must not grow unbounded forever either — same amortized sweep, keyed
-/// by the (day) `bucket` field this time.
+/// Billing rows retain historical counts; the usage-window sweep does not own billing history.
 #[test]
-fn add_metering_sweeps_stale_buckets() {
+fn add_metering_retains_historical_buckets() {
     let s = MemoryStore::new();
     let old_bucket = now().saturating_sub(40 * 86_400);
     let d = MeteringDelta {
@@ -444,7 +443,9 @@ fn add_metering_sweeps_stale_buckets() {
     for _ in 0..SWEEP_INTERVAL {
         s.add_metering(&d).unwrap();
     }
-    assert!(s.list_metering(old_bucket).unwrap().is_empty());
+    let historical = s.list_metering(old_bucket).unwrap();
+    assert_eq!(historical.len(), 1);
+    assert_eq!(historical[0].requests, SWEEP_INTERVAL);
 
     let fresh_bucket = now();
     let fresh = MeteringDelta {
@@ -455,9 +456,9 @@ fn add_metering_sweeps_stale_buckets() {
     assert_eq!(s.list_metering(fresh_bucket).unwrap().len(), 1);
 }
 
-/// Regression: metering sweep must not over-prune fresh buckets either.
+/// Historical and recent billing buckets retain their independent counts.
 #[test]
-fn add_metering_sweep_preserves_fresh_buckets() {
+fn add_metering_preserves_historical_and_recent_buckets() {
     let s = MemoryStore::new();
     let young_bucket = now().saturating_sub(5 * 86_400);
     let old_bucket = now().saturating_sub(40 * 86_400);
@@ -486,18 +487,17 @@ fn add_metering_sweep_preserves_fresh_buckets() {
         s.add_metering(&old).unwrap();
     }
     assert_eq!(s.list_metering(young_bucket).unwrap().len(), 1);
-    assert!(s.list_metering(old_bucket).unwrap().is_empty());
+    let historical = s.list_metering(old_bucket).unwrap();
+    assert_eq!(historical.len(), 1);
+    assert_eq!(historical[0].requests, SWEEP_INTERVAL - 1);
 }
 
-/// Same exact-boundary case as `add_usage_sweep_boundary_is_exact`, for metering's bucket
-/// retention: a bucket exactly `MAX_RETENTION_SECS` old must be evicted, one second fresher
-/// must survive.
+/// The usage retention boundary does not age billing history: both adjacent buckets survive.
 #[test]
-fn add_metering_sweep_boundary_is_exact() {
+fn add_metering_retains_buckets_at_the_usage_retention_boundary() {
     let s = MemoryStore::new();
     let n = now();
-    // Pin the sweep's clock to the SAME `n` the test derives its buckets from (see the usage
-    // boundary test above) so the retention ceiling is exact and race-free.
+    // Keep the usage horizon fixed while comparing the two billing buckets.
     s.pin_clock(n);
     let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
     let one_inside = at_ceiling + 1;
@@ -525,10 +525,13 @@ fn add_metering_sweep_boundary_is_exact() {
     for _ in 0..(SWEEP_INTERVAL - 1) {
         s.add_metering(&inside).unwrap();
     }
-    assert!(
-        s.list_metering(at_ceiling).unwrap().is_empty(),
-        "a bucket exactly at the retention ceiling must be evicted"
+    let at_horizon = s.list_metering(at_ceiling).unwrap();
+    assert_eq!(
+        at_horizon.len(),
+        1,
+        "billing is not aged at the usage horizon"
     );
+    assert_eq!(at_horizon[0].requests, 1);
     assert_eq!(
         s.list_metering(one_inside).unwrap().len(),
         1,

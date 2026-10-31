@@ -342,3 +342,85 @@ fn a_value_a_signed_column_cannot_hold_is_refused_before_any_write() {
         "nothing was spent"
     );
 }
+
+/// The host's explicit usage purge removes only windows strictly before its cutoff; the all-time
+/// ledger, cutoff equality, future windows and billing history survive.
+#[test]
+fn usage_purge_counts_removed_windows_and_preserves_all_time_and_cutoff() {
+    use busbar_contract::abi::sdk::store::{Op, Step};
+    let s = MemoryStore::new();
+    let ledger = UsageLedger {
+        requests: 7,
+        ..UsageLedger::default()
+    };
+    for (bucket, window) in [
+        ("a", 0),
+        ("a", 10),
+        ("b", 19),
+        ("a", 20),
+        ("b", 21),
+        ("a", u64::MAX),
+    ] {
+        s.put_usage(bucket, window, &ledger).unwrap();
+    }
+    let purge = |before| match busbar_contract::abi::sdk::store::StoreSlots::purge_usage_before(
+        &s,
+        &mut Op::detached(),
+        before,
+    ) {
+        Step::Ready(result) => result.expect("memory implements the usage-purge slot"),
+        Step::Pending { .. } => panic!("memory purge must complete inline"),
+    };
+    assert_eq!(purge(20), 2);
+    assert_eq!(s.get_usage("a", 10).unwrap().requests, 0);
+    assert_eq!(s.get_usage("b", 19).unwrap().requests, 0);
+    for (bucket, window) in [("a", 0), ("a", 20), ("b", 21), ("a", u64::MAX)] {
+        assert_eq!(s.get_usage(bucket, window).unwrap().requests, 7);
+    }
+    assert_eq!(purge(20), 0, "repeating a purge is idempotent");
+    assert_eq!(purge(0), 0, "zero cutoff removes nothing");
+    assert_eq!(purge(u64::MAX), 2);
+    assert_eq!(s.get_usage("a", 0).unwrap().requests, 7);
+    assert_eq!(s.get_usage("a", u64::MAX).unwrap().requests, 7);
+}
+
+/// Billing history belongs to the operator: unrelated writes must not silently erase old rows.
+#[test]
+fn billing_history_survives_repeated_writes_past_the_usage_retention_horizon() {
+    let s = MemoryStore::new();
+    let n = 1_800_000_000;
+    s.pin_clock(n);
+    let old = n - 40 * 86_400;
+    let delta = MeteringDelta {
+        key_id: "old-bill".into(),
+        bucket: old,
+        model: "m".into(),
+        provider: "p".into(),
+        tokens_input: 11,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: "at-use".into(),
+        pricing_version: "original".into(),
+        priced_from_ms: 42,
+        usage_units: Default::default(),
+    };
+    s.add_metering(&delta).unwrap();
+    let original = s.list_metering(old).unwrap();
+    let fresh = MeteringDelta {
+        key_id: "new-bill".into(),
+        bucket: n,
+        ..delta
+    };
+    for _ in 0..(2 * SWEEP_INTERVAL) {
+        s.add_metering(&fresh).unwrap();
+    }
+    assert_eq!(
+        s.list_metering(old).unwrap(),
+        original,
+        "old billing rows are never aged out"
+    );
+    assert_eq!(original.len(), 1);
+}

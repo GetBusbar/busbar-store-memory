@@ -27,9 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Retention ceiling for `usage`/`metering` rows, keyed by their epoch-second period-start field
-/// (`window_start` / `bucket`): 31 days, the governance engine's own `max_window` for its in-memory
-/// rate cells, which this store's ledgers shadow.
+/// Retention ceiling for usage windows: 31 days, matching the governance rate cells.
+/// Billing metering rows are retained until the operator discards this ephemeral store.
 const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 
 /// One `retain()` sweep per this many writes to a map.
@@ -129,7 +128,6 @@ pub struct MemoryStore {
     audit: RwLock<BTreeMap<u64, AuditRecord>>,
     /// Write counters driving each map's amortized sweep (`records` has none: never aged out).
     usage_sweep_ticker: AtomicU64,
-    metering_sweep_ticker: AtomicU64,
     tokens_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`), bumped on every
     /// `keys`/`creds` mutation.
@@ -437,10 +435,6 @@ impl Store for MemoryStore {
             *cur = pin(cur.saturating_add(*n));
         }
 
-        if sweep_due(&self.metering_sweep_ticker) {
-            let n = self.now();
-            m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
-        }
         Ok(())
     }
 

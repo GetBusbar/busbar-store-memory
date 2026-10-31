@@ -199,6 +199,13 @@ impl MemoryStore {
         })
     }
 
+    pub(crate) fn v3_purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
+        let mut usage = write(&self.usage);
+        let held = usage.len();
+        usage.retain(|(_, window), _| *window == 0 || *window >= before);
+        Ok((held - usage.len()) as u64)
+    }
+
     pub(crate) fn v3_add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
         deltas
             .iter()
@@ -249,6 +256,7 @@ impl StoreSlots for MemoryStore {
         list_keys_since => RecordStore::list_keys_since(since: u64) -> RecordStoreResult<Vec<VirtualKey>>;
         get_usage => RecordStore::get_usage(bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
         put_usage => RecordStore::put_usage(bucket_id: &str, window_start: u64, ledger: &UsageLedger) -> RecordStoreResult<()>;
+        purge_usage_before => Self::v3_purge_usage_before(before: u64) -> RecordStoreResult<u64>;
         list_metering => RecordStore::list_metering(bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
         put_credential => RecordStore::put_credential(secret: &CredentialSecret) -> RecordStoreResult<()>;
         put_key_with_credential => RecordStore::put_key_with_credential(key: &VirtualKey, secret: &CredentialSecret) -> RecordStoreResult<()>;
