@@ -301,11 +301,10 @@ impl Store for MemoryStore {
 
     fn delete_key(&self, id: &str) -> StoreResult<()> {
         // TOMBSTONE: the key row survives (billing and audit attribution keep resolving, the id is
-        // never reissued); only its credentials and `usage` ledger go. All three write guards are
-        // held for the whole cascade, in a fixed order (keys, usage, creds), so a concurrent
-        // `add_usage` cannot resurrect a ledger row in the gap.
+        // never reissued); only its credentials go. Usage and metering are billing evidence and
+        // stay. Both guards are held for the whole cascade, in `put_credential`'s order (keys,
+        // creds).
         let mut keys = write(&self.keys);
-        let mut usage = write(&self.usage);
         let mut creds = write(&self.creds);
         let Some(key) = keys.get_mut(id) else {
             return Err(StoreError(format!("delete_key: unknown id '{id}'")));
@@ -317,7 +316,6 @@ impl Store for MemoryStore {
         key.enabled = false;
         key.deleted_at = Some(self.now());
         key.revision = rev;
-        usage.retain(|(k, _), _| k != id);
         creds.retain(|_, c| c.meta.key_id != id);
         Ok(())
     }
