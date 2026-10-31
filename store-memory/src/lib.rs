@@ -653,11 +653,11 @@ impl Store for MemoryStore {
         now: u64,
     ) -> StoreResult<bool> {
         // Put-if-absent under one guard (the trait default would make every approval replayable): a
-        // live row answers `false` and is left as it is; a lapsed row is a new claim.
+        // row with `expires_at >= now` answers `false` and is left as it is; a lapsed row is a new claim.
         let mut spent = write(&self.plane_tokens);
         let first = match spent.entry((kind.to_string(), token.to_string())) {
             std::collections::hash_map::Entry::Occupied(mut row) => {
-                let lapsed = *row.get() <= now;
+                let lapsed = *row.get() < now;
                 if lapsed {
                     row.insert(expires_at);
                 }
@@ -669,7 +669,7 @@ impl Store for MemoryStore {
             }
         };
         if sweep_due(&self.tokens_sweep_ticker) {
-            spent.retain(|_, exp| *exp > now);
+            spent.retain(|_, exp| *exp >= now);
         }
         Ok(first)
     }
