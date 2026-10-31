@@ -142,7 +142,7 @@ fn add_usage_accumulates_per_model() {
 }
 
 #[test]
-fn delete_key_tombstones_and_cascades_usage_and_creds() {
+fn delete_key_tombstones_and_cascades_creds_but_keeps_usage() {
     let s = MemoryStore::new();
     s.put_key(&key("a")).unwrap();
     s.put_usage("a", 0, &ledger(1, "m", 5, 0)).unwrap();
@@ -152,7 +152,8 @@ fn delete_key_tombstones_and_cascades_usage_and_creds() {
     let tombstone = s.get_key("a").unwrap().unwrap();
     assert!(!tombstone.enabled);
     assert!(tombstone.deleted_at.is_some());
-    assert_eq!(s.get_usage("a", 0).unwrap(), UsageLedger::default());
+    // Usage is billing evidence: it outlives the key.
+    assert_eq!(s.get_usage("a", 0).unwrap().requests, 1);
     assert!(s.list_credentials("a").unwrap().is_empty());
     // Idempotent: a second delete of an already-tombstoned key is a no-op, not an error.
     s.delete_key("a").unwrap();
@@ -1491,9 +1492,7 @@ fn credential_refusals_name_the_calling_method() {
     };
     let taken = |op: &str| format!("{op}: public_id 'P1' is already in use for kind 'generic'");
 
-    let err = s
-        .put_credential(&credential("c2", "k", "P2"))
-        .unwrap_err();
+    let err = s.put_credential(&credential("c2", "k", "P2")).unwrap_err();
     assert_eq!(err.0, live_slot("put_credential"));
     let err = s
         .put_key_with_credential(&key("k"), &credential("c2", "k", "P2"))
@@ -1547,7 +1546,10 @@ fn a_revoked_credential_id_is_never_reminted() {
     }
     let kept = s.list_credentials("k").unwrap();
     assert_eq!(kept.len(), 1);
-    assert!(kept[0].revoked_at.is_some(), "the revoked row was rewritten");
+    assert!(
+        kept[0].revoked_at.is_some(),
+        "the revoked row was rewritten"
+    );
 
     let mut fresh = credential("c2", "k", "P2");
     fresh.meta.created_at = 77;
@@ -1593,8 +1595,14 @@ fn reputting_a_live_credential_is_idempotent_or_refused() {
     let mut moved = c.clone();
     moved.meta.public_id = "P9".to_string();
     assert!(s.put_credential(&moved).is_err());
-    let row = s.lookup_credential_secret("generic", "P1").unwrap().unwrap();
-    assert_eq!(row.secret, "v1:plain:sek", "a refused re-put changed the row");
+    let row = s
+        .lookup_credential_secret("generic", "P1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.secret, "v1:plain:sek",
+        "a refused re-put changed the row"
+    );
 }
 
 /// Revoking destroys the secret material: the revoked row keeps its metadata, loses its secret and
