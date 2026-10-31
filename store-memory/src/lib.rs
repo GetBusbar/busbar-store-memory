@@ -190,21 +190,30 @@ impl MemoryStore {
         (record.kind.to_string(), record.id.to_string(), UPSERT_SEQ)
     }
 
-    /// The two credential-table preconditions, shared by `put_credential` and the atomic
-    /// `put_key_with_credential`.
+    /// The credential-table preconditions, shared by `put_credential` and the atomic
+    /// `put_key_with_credential`. `Ok(true)`: the identical live credential is already stored
+    /// (revision aside), so the caller writes nothing.
     fn credential_preconditions(
         op: &str,
         creds: &HashMap<String, CredentialSecret>,
         secret: &CredentialSecret,
-    ) -> StoreResult<()> {
+    ) -> StoreResult<bool> {
         let meta = &secret.meta;
-        if creds
-            .get(&meta.id)
-            .is_some_and(|c| c.meta.revoked_at.is_some())
-        {
+        if let Some(stored) = creds.get(&meta.id) {
+            if stored.meta.revoked_at.is_some() {
+                return Err(StoreError(format!(
+                    "{op}: credential '{}' is revoked; a revoked credential is never re-minted",
+                    meta.id
+                )));
+            }
+            let mut offered = secret.clone();
+            offered.meta.revision = stored.meta.revision;
+            if offered == *stored {
+                return Ok(true);
+            }
             return Err(StoreError(format!(
-                "{op}: credential '{}' is revoked; a revoked credential is never re-minted",
-                meta.id
+                "{op}: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                stored.meta.slot, stored.meta.key_id, stored.meta.kind
             )));
         }
         // An explicit slot pointed at a LIVE credential of the same (key_id, kind) would silently
@@ -238,7 +247,7 @@ impl MemoryStore {
                 meta.public_id, meta.kind
             )));
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Insert `secret`, replacing a REVOKED row in the same `(key_id, kind, slot)` (the contract
@@ -428,7 +437,9 @@ impl Store for MemoryStore {
                 secret.meta.key_id
             )));
         }
-        Self::credential_preconditions("put_credential", &creds, secret)?;
+        if Self::credential_preconditions("put_credential", &creds, secret)? {
+            return Ok(());
+        }
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         Self::insert_credential(&mut creds, secret);
@@ -464,11 +475,15 @@ impl Store for MemoryStore {
                 secret.meta.key_id, key.id
             )));
         }
-        Self::credential_preconditions("put_key_with_credential", &creds, secret)?;
+        let unchanged =
+            Self::credential_preconditions("put_key_with_credential", &creds, secret)?;
 
         let mut key = key.clone();
         key.revision = self.next_revision();
         keys.insert(key.id.clone(), key);
+        if unchanged {
+            return Ok(());
+        }
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         Self::insert_credential(&mut creds, secret);
