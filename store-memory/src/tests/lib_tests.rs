@@ -994,7 +994,7 @@ fn plane_token_live_is_true_while_active_and_unexpired_and_is_repeatable() {
 }
 
 /// Fail-closed on every non-live case: unknown `(kind, token)`, a terminal disposition, and a lapsed
-/// deadline (`now >= expires_at`) each yield `Ok(false)`.
+/// deadline (`now > expires_at`) each yield `Ok(false)`; `now == expires_at` is still live.
 #[test]
 fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
     let s = MemoryStore::new();
@@ -1006,11 +1006,10 @@ fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
         .unwrap();
     assert!(!s.plane_token_live("other", "t1", 1000, 100).unwrap());
 
-    // Expired: now == expires_at is already past (`now < expires_at` is the live predicate), and
-    // now > expires_at likewise.
+    // Live while now <= expires_at; dead only once now > expires_at.
     assert!(
-        !s.plane_token_live("task", "t1", 1000, 1000).unwrap(),
-        "now == expires_at is not before the deadline"
+        s.plane_token_live("task", "t1", 1000, 1000).unwrap(),
+        "now == expires_at is the last live second"
     );
     assert!(!s.plane_token_live("task", "t1", 1000, 1001).unwrap());
 
