@@ -1733,7 +1733,8 @@ fn counters_pin_at_i64_max() {
     assert_eq!((u.requests, u.billable_requests), (MAX, MAX));
     assert_eq!((u.total_input(), u.total_output()), (MAX, 7));
 
-    s.put_usage("b", 0, &ledger(MAX - 1, "m", MAX - 1, 0)).unwrap();
+    s.put_usage("b", 0, &ledger(MAX - 1, "m", MAX - 1, 0))
+        .unwrap();
     let d = UsageDelta {
         requests: 5,
         billable_requests: 5,
@@ -1746,7 +1747,10 @@ fn counters_pin_at_i64_max() {
     };
     s.add_usage("b", 0, &d).unwrap();
     let u = s.get_usage("b", 0).unwrap();
-    assert_eq!((u.requests, u.billable_requests, u.total_input()), (MAX, MAX, MAX));
+    assert_eq!(
+        (u.requests, u.billable_requests, u.total_input()),
+        (MAX, MAX, MAX)
+    );
 
     let m = MeteringDelta {
         usage_units: [("open".to_string(), u64::MAX)].into_iter().collect(),
@@ -1767,7 +1771,10 @@ fn counters_pin_at_i64_max() {
     s.add_metering(&m).unwrap();
     s.add_metering(&m).unwrap();
     let r = &s.list_metering(7).unwrap()[0];
-    assert_eq!((r.tokens_input, r.tokens_output, r.tokens_cache_read), (MAX, MAX, 2));
+    assert_eq!(
+        (r.tokens_input, r.tokens_output, r.tokens_cache_read),
+        (MAX, MAX, 2)
+    );
     assert_eq!((r.requests, r.billable_requests), (MAX, MAX));
     assert_eq!(r.usage_units["open"], MAX);
 }

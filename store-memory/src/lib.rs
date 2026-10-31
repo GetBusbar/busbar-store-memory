@@ -12,7 +12,7 @@
 
 #![forbid(unsafe_code)]
 
-use busbar_contract::abi::sdk::store::column::storable_i64;
+use busbar_contract::abi::sdk::store::column::{self, storable_i64};
 use busbar_contract::abi::sdk::store::fork;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
@@ -69,6 +69,19 @@ pub(crate) fn check_plane(method: &str, record: PlaneRecordRef<'_>) -> StoreResu
 /// A metering delta's `priced_from_ms` is part of its key and must fit the signed column.
 pub(crate) fn check_metering(method: &str, d: &MeteringDelta) -> StoreResult<()> {
     storable_i64(method, "priced_from_ms", d.priced_from_ms).map(drop)
+}
+
+/// A counter as a signed 64-bit column would hold it: above `i64::MAX` pins there.
+fn pin(v: u64) -> u64 {
+    column::read_u64(column::clamp(v))
+}
+
+fn pin_ledger(ledger: &mut UsageLedger) {
+    ledger.requests = pin(ledger.requests);
+    ledger.billable_requests = pin(ledger.billable_requests);
+    for m in &mut ledger.models {
+        m.usage_units.values_mut().for_each(|n| *n = pin(*n));
+    }
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -358,16 +371,19 @@ impl Store for MemoryStore {
         window_start: u64,
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
-        write(&self.usage).insert((bucket_id.to_string(), window_start), ledger.clone());
+        let mut ledger = ledger.clone();
+        pin_ledger(&mut ledger);
+        write(&self.usage).insert((bucket_id.to_string(), window_start), ledger);
         Ok(())
     }
 
     fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
         let mut usage = write(&self.usage);
-        usage
+        let ledger = usage
             .entry((bucket_id.to_string(), window_start))
-            .or_default()
-            .apply_delta(delta);
+            .or_default();
+        ledger.apply_delta(delta);
+        pin_ledger(ledger);
 
         // Only this hot path sweeps; `put_usage` (absolute set) does not.
         if sweep_due(&self.usage_sweep_ticker) {
@@ -408,15 +424,15 @@ impl Store for MemoryStore {
                 priced_from_ms: d.priced_from_ms,
                 usage_units: BTreeMap::new(),
             });
-        e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
-        e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
-        e.tokens_cache_read = e.tokens_cache_read.saturating_add(d.tokens_cache_read);
-        e.tokens_cache_write = e.tokens_cache_write.saturating_add(d.tokens_cache_write);
-        e.requests = e.requests.saturating_add(d.requests);
-        e.billable_requests = e.billable_requests.saturating_add(d.billable_requests);
+        e.tokens_input = pin(e.tokens_input.saturating_add(d.tokens_input));
+        e.tokens_output = pin(e.tokens_output.saturating_add(d.tokens_output));
+        e.tokens_cache_read = pin(e.tokens_cache_read.saturating_add(d.tokens_cache_read));
+        e.tokens_cache_write = pin(e.tokens_cache_write.saturating_add(d.tokens_cache_write));
+        e.requests = pin(e.requests.saturating_add(d.requests));
+        e.billable_requests = pin(e.billable_requests.saturating_add(d.billable_requests));
         for (class, n) in &d.usage_units {
             let cur = e.usage_units.entry(class.clone()).or_insert(0);
-            *cur = cur.saturating_add(*n);
+            *cur = pin(cur.saturating_add(*n));
         }
 
         if sweep_due(&self.metering_sweep_ticker) {
