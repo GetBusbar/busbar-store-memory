@@ -675,7 +675,7 @@ impl Store for MemoryStore {
     }
 
     /// Multi-use and SPENDS NOTHING: a plain read of the `(kind, token)` upsert record, live while
-    /// it is present, `Active`, and `now` has not reached `expires_at`.
+    /// it is present, `Active`, and `now` has not passed `expires_at`.
     fn plane_token_live(
         &self,
         kind: &str,
@@ -685,7 +685,7 @@ impl Store for MemoryStore {
     ) -> StoreResult<bool> {
         Ok(read(&self.plane_records)
             .get(&(kind.to_string(), token.to_string(), UPSERT_SEQ))
-            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
+            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now <= expires_at))
     }
 }
 
