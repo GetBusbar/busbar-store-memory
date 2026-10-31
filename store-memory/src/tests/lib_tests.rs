@@ -1477,3 +1477,44 @@ fn plane_chains_list_one_parent_and_delete_every_seq() {
         1
     );
 }
+
+/// One text per condition, the calling method's own name in front of it.
+#[test]
+fn credential_refusals_name_the_calling_method() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    s.put_key(&key("other")).unwrap();
+    s.put_credential(&credential("c1", "k", "P1")).unwrap();
+
+    let live_slot = |op: &str| {
+        format!("{op}: slot 0 for key 'k' kind 'generic' holds a live credential; revoke it first")
+    };
+    let taken = |op: &str| format!("{op}: public_id 'P1' is already in use for kind 'generic'");
+
+    let err = s
+        .put_credential(&credential("c2", "k", "P2"))
+        .unwrap_err();
+    assert_eq!(err.0, live_slot("put_credential"));
+    let err = s
+        .put_key_with_credential(&key("k"), &credential("c2", "k", "P2"))
+        .unwrap_err();
+    assert_eq!(err.0, live_slot("put_key_with_credential"));
+
+    let err = s
+        .put_credential(&credential("c3", "other", "P1"))
+        .unwrap_err();
+    assert_eq!(err.0, taken("put_credential"));
+    let err = s
+        .put_key_with_credential(&key("other"), &credential("c3", "other", "P1"))
+        .unwrap_err();
+    assert_eq!(err.0, taken("put_key_with_credential"));
+
+    assert_eq!(
+        s.revoke_credential("nope", "r").unwrap_err().0,
+        "revoke_credential: unknown id 'nope'"
+    );
+    assert_eq!(
+        s.delete_key("nope").unwrap_err().0,
+        "delete_key: unknown id 'nope'"
+    );
+}
