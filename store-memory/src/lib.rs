@@ -630,17 +630,27 @@ impl Store for MemoryStore {
         retention: Retention,
     ) -> StoreResult<u64> {
         let mut records = write(&self.plane_records);
-        let before_len = records.len();
-        records.retain(|(k, _, _), r| {
+        let mut purged = 0u64;
+        let mut tasks = HashSet::new();
+        records.retain(|(k, i, _), r| {
             let goes = k == kind
                 && r.ts < before
                 && match retention {
                     Retention::Age => true,
                     Retention::TerminalOnly => r.disposition == PlaneDisposition::Terminal,
                 };
+            if goes {
+                purged += 1;
+                if kind == TASK_KIND {
+                    tasks.insert(i.clone());
+                }
+            }
             !goes
         });
-        Ok((before_len - records.len()) as u64)
+        if !tasks.is_empty() {
+            records.retain(|(k, i, _), _| !(k == TASK_EVENT_KIND && tasks.contains(i)));
+        }
+        Ok(purged)
     }
 
     /// Absent is a no-op; every `seq` under the identity goes, and a task takes its `task_event`
