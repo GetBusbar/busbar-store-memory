@@ -361,36 +361,59 @@ fn a_parented_upserted_record_reads_back_by_its_own_id() {
 }
 
 #[test]
-fn audit_rows_are_ordered_idempotent_and_fork_protected() {
-    use busbar_contract::records::AuditRecord;
+fn audit_plane_records_are_ordered_idempotent_and_fork_protected() {
     for dropped in [false, true] {
         let store = support::open(dropped);
-        let row = |seq| AuditRecord {
-            seq,
-            ts: 1,
-            action: "key.create".into(),
-            resource: "key:k".into(),
-            outcome: "applied".into(),
-            principal: "operator".into(),
-            prev_hash: String::new(),
-            hash: format!("hash-{seq}"),
+        let row = |seq| {
+            record(
+                "audit",
+                "admin",
+                Some("admin"),
+                seq,
+                format!("sealed-audit-{seq}").into_bytes(),
+            )
         };
         let first = row(1);
         let second = row(2);
-        store.append_audit(&second).unwrap();
-        store.append_audit(&first).unwrap();
-        store.append_audit(&first).unwrap();
+        RecordStore::append_plane_record(&store, second.view()).unwrap();
+        RecordStore::append_plane_record(&store, first.view()).unwrap();
+        RecordStore::append_plane_record(&store, first.view()).unwrap();
         let mut fork = first.clone();
-        fork.hash = "different".into();
-        assert!(store.append_audit(&fork).is_err());
+        fork.body = b"different sealed audit body".to_vec();
+        assert!(RecordStore::append_plane_record(&store, fork.view()).is_err());
+        let expected = vec![first.body.clone(), second.body.clone()];
         assert_eq!(
-            RecordStore::list_audit(&store).unwrap(),
-            vec![first, second.clone()]
+            RecordStore::list_plane_records(&store, "audit", &PlaneSelector::All).unwrap(),
+            expected,
+            "out-of-order appends sort by sequence; replay and a refused fork add no rows"
+        );
+        let another_chain = record("audit", "other", Some("other"), 1, b"other body".to_vec());
+        RecordStore::append_plane_record(&store, another_chain.view()).unwrap();
+        assert_eq!(
+            RecordStore::list_plane_records(
+                &store,
+                "audit",
+                &PlaneSelector::Parent("admin".into())
+            )
+            .unwrap(),
+            expected,
+            "the same sequence in another chain does not affect the admin audit"
         );
         assert_eq!(
-            RecordStore::list_audit_tail(&store, 1).unwrap(),
-            vec![second]
+            RecordStore::list_plane_records(
+                &store,
+                "audit",
+                &PlaneSelector::Parent("other".into())
+            )
+            .unwrap(),
+            vec![another_chain.body]
         );
-        assert!(RecordStore::list_audit_tail(&store, 0).unwrap().is_empty());
+        assert!(RecordStore::list_plane_records(
+            &store,
+            "audit",
+            &PlaneSelector::Parent("absent".into())
+        )
+        .unwrap()
+        .is_empty());
     }
 }

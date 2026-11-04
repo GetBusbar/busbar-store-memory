@@ -6,7 +6,6 @@ use busbar_contract::records::{
     UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 
-use busbar_plugin_loader::store_adapter::StoreAdapter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -30,8 +29,8 @@ fn subjects() -> Vec<Subject> {
             store: Arc::new(support::open(false)),
         },
         Subject {
-            door: "adapter",
-            store: StoreAdapter::native(Arc::new(support::open(false))).store(),
+            door: "store axis",
+            store: support::open_axis(),
         },
         Subject {
             door: "dropped-in table",

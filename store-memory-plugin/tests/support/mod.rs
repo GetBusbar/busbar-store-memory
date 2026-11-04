@@ -55,3 +55,25 @@ pub fn open(dropped: bool) -> LoadedStore {
     .expect("actual door loads");
     LoadedStore::open(p, d, b"{}", mint).expect("actual memory opens")
 }
+
+/// Open the product through the same store axis that the composition root installs.
+pub fn open_axis() -> Arc<dyn busbar_contract::records::RecordStore> {
+    use busbar_contract::store_calls::{StoreAxis, StoreDoor};
+    use busbar_plugin_loader::dispatch::PluginLogConfig;
+    use busbar_plugin_loader::store_v3::DoorStoreAxis;
+
+    let axis = DoorStoreAxis {
+        dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
+        logs: PluginLogConfig::from_words(None, None, &Default::default(), None, None)
+            .expect("default plugin logs"),
+        conns: ConnTable::NoNeeds,
+        mint,
+    };
+    axis.open(
+        StoreDoor::Linked(busbar_store_memory::door),
+        "memory-product-axis",
+        b"{}",
+    )
+    .expect("actual memory opens through the store axis")
+    .records
+}
