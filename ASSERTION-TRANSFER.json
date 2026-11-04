@@ -1,0 +1,1196 @@
+{
+  "source_head": "d3066e76a9db5927d86c34051532c33e463f9745",
+  "product_tests": [
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_opid_tests.rs",
+        "test": "a_true_replay_is_deduped",
+        "line": 128,
+        "end_line": 142,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 141,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(requests(&s), 1, \"the same op_id applies once\");"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact replay count assertion to real memory ABI tests."
+      },
+      "destination": "store-memory-plugin/tests/replay_comparator.rs",
+      "test": "a_true_replay_is_deduped",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_shortcut_tests.rs",
+        "test": "the_compiled_in_shortcut_answers_a_replayed_write_differently",
+        "line": 56,
+        "end_line": 89,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 80,
+            "macro": "assert_ne",
+            "source_line": "assert_ne!("
+          },
+          {
+            "line": 84,
+            "macro": "assert",
+            "source_line": "assert!(through_table.contains(\"requests: 1\"), \"{through_table}\");"
+          },
+          {
+            "line": 85,
+            "macro": "assert",
+            "source_line": "assert!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer unchanged assertion intent to real store ordinary tests; invoke actual product logic and both ABI doors where applicable."
+      },
+      "destination": "store-memory-plugin/tests/replay_comparator.rs",
+      "test": "the_compiled_in_shortcut_answers_a_replayed_write_differently",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "the_memory_store_states_its_facts_in_its_tail",
+        "line": 186,
+        "end_line": 202,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 189,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 201,
+            "macro": "assert",
+            "source_line": "assert!(!s.name().is_empty(), \"the store states its name\");"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "the_memory_store_states_its_facts_in_its_tail",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "keys_round_trip_through_the_table",
+        "line": 204,
+        "end_line": 228,
+        "assertion_sites": 5,
+        "assertions": [
+          {
+            "line": 210,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_key(\"a\").expect(\"get\").map(|k| k.id), Some(\"a\".into()));"
+          },
+          {
+            "line": 211,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_key(\"zz\").expect(\"absent\"), None);"
+          },
+          {
+            "line": 219,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(ids, [\"a\", \"b\"]);"
+          },
+          {
+            "line": 221,
+            "macro": "assert",
+            "source_line": "assert!(s"
+          },
+          {
+            "line": 227,
+            "macro": "assert",
+            "source_line": "assert!(s.delete_key(\"nope\").is_err(), \"an unknown id is FAILED\");"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "keys_round_trip_through_the_table",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "the_tombstone_precondition_crosses_as_a_failure",
+        "line": 230,
+        "end_line": 240,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 239,
+            "macro": "assert",
+            "source_line": "assert!(!err.0.is_empty());"
+          }
+        ],
+        "expect_err_sites": 1,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "the_tombstone_precondition_crosses_as_a_failure",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "credentials_cross_as_secret_blobs_and_read_back",
+        "line": 252,
+        "end_line": 279,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 276,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(since.len(), 1);"
+          },
+          {
+            "line": 277,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(since[0].meta.id, \"c1\");"
+          },
+          {
+            "line": 278,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.list_credentials(\"k1\").expect(\"list\").len(), 1);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "credentials_cross_as_secret_blobs_and_read_back",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "plane_records_and_tokens_cross_the_request_path_slots",
+        "line": 281,
+        "end_line": 314,
+        "assertion_sites": 7,
+        "assertions": [
+          {
+            "line": 288,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 292,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_plane_record(\"task\", \"t-absent\").expect(\"get\"), None);"
+          },
+          {
+            "line": 297,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 302,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 306,
+            "macro": "assert",
+            "source_line": "assert!(s"
+          },
+          {
+            "line": 309,
+            "macro": "assert",
+            "source_line": "assert!(!s"
+          },
+          {
+            "line": 313,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_plane_record(\"task\", \"t1\").expect(\"get\"), None);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "plane_records_and_tokens_cross_the_request_path_slots",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "records_put_get_and_scan_through_the_typed_surface",
+        "line": 352,
+        "end_line": 384,
+        "assertion_sites": 5,
+        "assertions": [
+          {
+            "line": 362,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 368,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 373,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 377,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.record_scan(\"sch\", b\"a/\", 1).await.expect(\"scan\").len(), 1);"
+          },
+          {
+            "line": 378,
+            "macro": "assert",
+            "source_line": "assert!(s"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "records_put_get_and_scan_through_the_typed_surface",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "a_usage_batch_replays_once_and_a_reused_op_id_is_a_conflict",
+        "line": 386,
+        "end_line": 400,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 394,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 399,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", 60).expect(\"read\").requests, 1);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "a_usage_batch_replays_once_and_a_reused_op_id_is_a_conflict",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "a_metering_batch_applies_through_the_typed_surface",
+        "line": 402,
+        "end_line": 430,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 426,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "a_metering_batch_applies_through_the_typed_surface",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail",
+        "line": 432,
+        "end_line": 443,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 441,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(st.marks & MARK_EPHEMERAL, MARK_EPHEMERAL);"
+          },
+          {
+            "line": 442,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(st.kind_tail_size as usize, std::mem::size_of::<StoreTail>());"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/store_v3_tests.rs",
+        "test": "a_store_refresh_refuses_naming_the_restart_that_applies_settings",
+        "line": 462,
+        "end_line": 482,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 472,
+            "macro": "assert_ne",
+            "source_line": "assert_ne!("
+          },
+          {
+            "line": 478,
+            "macro": "assert",
+            "source_line": "assert!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer to actual store ABI ordinary tests, preserving content/refusal assertions. Facts must assert real token secret_ref, not copied empty tail."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "a_store_refresh_refuses_naming_the_restart_that_applies_settings",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/src/tests/stub_store_plane_tests.rs",
+        "test": "a_parented_upserted_record_reads_back_by_its_own_id",
+        "line": 19,
+        "end_line": 50,
+        "assertion_sites": 6,
+        "assertions": [
+          {
+            "line": 25,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 29,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 37,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(listed, vec![b\"one\".to_vec(), b\"two\".to_vec()]);"
+          },
+          {
+            "line": 40,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 45,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_plane_record(\"task\", \"t1\").unwrap(), None);"
+          },
+          {
+            "line": 46,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer unchanged assertion intent to real store ordinary tests; invoke actual product logic and both ABI doors where applicable."
+      },
+      "destination": "store-memory-plugin/tests/loader_store_acceptance.rs",
+      "test": "a_parented_upserted_record_reads_back_by_its_own_id",
+      "status": "source-dual-door-followup-awaiting-native",
+      "additional_destination": "store-memory/tests/parented_records.rs",
+      "coverage": "All six original get/get/list/replace/delete/sibling assertions run through actual linked and actual dropped doors with the exact original task/ctx-1/t1/t2 inputs; original direct MemoryStore unit retained."
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "an_untouched_cell_reads_the_empty_ledger",
+        "line": 108,
+        "end_line": 114,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 112,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(got, UsageLedger::default(), \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "an_untouched_cell_reads_the_empty_ledger",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "add_usage_is_additive_across_flushes",
+        "line": 116,
+        "end_line": 134,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 130,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!((got.requests, got.billable_requests), (5, 5), \"{}\", s.door);"
+          },
+          {
+            "line": 131,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m\", UNIT_INPUT), 15, \"{}\", s.door);"
+          },
+          {
+            "line": 132,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m\", UNIT_OUTPUT), 7, \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "add_usage_is_additive_across_flushes",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "nodes_flushing_one_cell_sum_to_the_fleet_total",
+        "line": 136,
+        "end_line": 150,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 147,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(got.requests, 12, \"{}\", s.door);"
+          },
+          {
+            "line": 148,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m\", UNIT_OUTPUT), 4 * (1 + 2 + 3), \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "nodes_flushing_one_cell_sum_to_the_fleet_total",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "a_refund_moves_billable_requests_only",
+        "line": 152,
+        "end_line": 165,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 162,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!((got.requests, got.billable_requests), (1, 0), \"{}\", s.door);"
+          },
+          {
+            "line": 163,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(got.total_tokens(), 0, \"{} bills no tokens\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "a_refund_moves_billable_requests_only",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "settle_accrues_per_model_and_per_unit",
+        "line": 167,
+        "end_line": 211,
+        "assertion_sites": 5,
+        "assertions": [
+          {
+            "line": 195,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m-a\", UNIT_CACHE_WRITE), 6, \"{}\", s.door);"
+          },
+          {
+            "line": 196,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m-b\", UNIT_INPUT), 100, \"{}\", s.door);"
+          },
+          {
+            "line": 197,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 203,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(got.total_input(), 103, \"{}\", s.door);"
+          },
+          {
+            "line": 204,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "settle_accrues_per_model_and_per_unit",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "a_refund_larger_than_the_balance_floors_at_zero",
+        "line": 213,
+        "end_line": 226,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 223,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!((got.requests, got.billable_requests), (0, 0), \"{}\", s.door);"
+          },
+          {
+            "line": 224,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m\", UNIT_INPUT), 0, \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "a_refund_larger_than_the_balance_floors_at_zero",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "the_floor_makes_arrival_order_matter",
+        "line": 228,
+        "end_line": 248,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 245,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(a.billable_requests, 0, \"{}\", s.door);"
+          },
+          {
+            "line": 246,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(b.billable_requests, 1, \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "the_floor_makes_arrival_order_matter",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "models_read_back_in_first_seen_order",
+        "line": 250,
+        "end_line": 262,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 260,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(order, [\"zeta\", \"alpha\", \"mid\"], \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "models_read_back_in_first_seen_order",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "cells_are_independent_per_bucket_and_window",
+        "line": 264,
+        "end_line": 284,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 277,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "cells_are_independent_per_bucket_and_window",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "put_usage_sets_absolutely_and_add_usage_adds_on_top",
+        "line": 286,
+        "end_line": 308,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 295,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 305,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!((got.requests, got.billable_requests), (3, 2), \"{}\", s.door);"
+          },
+          {
+            "line": 306,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m\", UNIT_INPUT), 21, \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "put_usage_sets_absolutely_and_add_usage_adds_on_top",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "one_coalesced_usage_delta_equals_its_singles",
+        "line": 310,
+        "end_line": 336,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 329,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "one_coalesced_usage_delta_equals_its_singles",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "usage_counters_saturate_not_wrap",
+        "line": 338,
+        "end_line": 366,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 363,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(got.requests, u64::MAX, \"{}\", s.door);"
+          },
+          {
+            "line": 364,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&got, \"m\", UNIT_INPUT), u64::MAX, \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "usage_counters_saturate_not_wrap",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "a_coalesced_metering_delta_counts_every_response",
+        "line": 368,
+        "end_line": 383,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 378,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(rows.len(), 1, \"{}\", s.door);"
+          },
+          {
+            "line": 380,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!((r.requests, r.billable_requests), (4, 4), \"{}\", s.door);"
+          },
+          {
+            "line": 381,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!((r.tokens_input, r.tokens_output), (40, 80), \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "a_coalesced_metering_delta_counts_every_response",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "the_metering_cell_is_key_bucket_model_provider",
+        "line": 385,
+        "end_line": 422,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 410,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "the_metering_cell_is_key_bucket_model_provider",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "a_rate_card_edit_splits_the_metering_day",
+        "line": 424,
+        "end_line": 441,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 439,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(got, vec![(0, 1), (1_790_040_000_000, 2)], \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "a_rate_card_edit_splits_the_metering_day",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "metering_rows_keep_each_groups_and_versions_counts",
+        "line": 443,
+        "end_line": 484,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 461,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(rows.len(), 4, \"{}\", s.door);"
+          },
+          {
+            "line": 471,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "metering_rows_keep_each_groups_and_versions_counts",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "list_metering_answers_only_the_bucket_asked",
+        "line": 486,
+        "end_line": 508,
+        "assertion_sites": 2,
+        "assertions": [
+          {
+            "line": 495,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 501,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "list_metering_answers_only_the_bucket_asked",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "metering_counters_add_and_saturate",
+        "line": 510,
+        "end_line": 529,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 520,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(r.tokens_input, u64::MAX, \"{}\", s.door);"
+          },
+          {
+            "line": 521,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 527,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(r.requests, 2, \"{}\", s.door);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0,
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy."
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "metering_counters_add_and_saturate",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy.",
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "v3_a_duplicate_usage_batch_applies_once",
+        "line": 761,
+        "end_line": 777,
+        "assertion_sites": 5,
+        "assertions": [
+          {
+            "line": 768,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(1), &batch), Ok(()));"
+          },
+          {
+            "line": 769,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 774,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", DAY).requests, 1);"
+          },
+          {
+            "line": 775,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(tier(&s.get_usage(\"k\", DAY), \"m\", UNIT_INPUT), 10);"
+          },
+          {
+            "line": 776,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"g\", DAY).requests, 1);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "v3_a_duplicate_usage_batch_applies_once",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy.",
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "v3_a_duplicate_usage_batch_applies_once_after_restart",
+        "line": 779,
+        "end_line": 799,
+        "assertion_sites": 8,
+        "assertions": [
+          {
+            "line": 782,
+            "macro": "assert",
+            "source_line": "assert!("
+          },
+          {
+            "line": 787,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));"
+          },
+          {
+            "line": 788,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));"
+          },
+          {
+            "line": 789,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", DAY).requests, 1);"
+          },
+          {
+            "line": 791,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!("
+          },
+          {
+            "line": 796,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));"
+          },
+          {
+            "line": 797,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));"
+          },
+          {
+            "line": 798,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", DAY).requests, 1);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "v3_a_duplicate_usage_batch_applies_once_after_restart",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy.",
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "v3_equal_bodies_under_distinct_op_ids_both_apply",
+        "line": 801,
+        "end_line": 808,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 805,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(3), &batch), Ok(()));"
+          },
+          {
+            "line": 806,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(4), &batch), Ok(()));"
+          },
+          {
+            "line": 807,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", DAY).requests, 4);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "v3_equal_bodies_under_distinct_op_ids_both_apply",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy.",
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "v3_a_reused_op_id_with_another_body_is_refused",
+        "line": 810,
+        "end_line": 818,
+        "assertion_sites": 3,
+        "assertions": [
+          {
+            "line": 815,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(20), &a), Ok(()));"
+          },
+          {
+            "line": 816,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_usage_batch(op(20), &b), Err(StoreFailure::Conflict));"
+          },
+          {
+            "line": 817,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", DAY).requests, 1);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "v3_a_reused_op_id_with_another_body_is_refused",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy.",
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "v3_a_batch_applies_its_cells_in_order",
+        "line": 820,
+        "end_line": 829,
+        "assertion_sites": 1,
+        "assertions": [
+          {
+            "line": 828,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.get_usage(\"k\", DAY).billable_requests, 1);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "v3_a_batch_applies_its_cells_in_order",
+      "status": "source-transferred-unbuilt"
+    },
+    {
+      "source": {
+        "owner": "real-store-product",
+        "edit": "Transfer exact money/count/refund/saturation/order/OpId assertions to real store ordinary tests; subjects use real direct/linked/dropped product, no fixture copy.",
+        "file": "crates/plugin-loader/tests/store_money_acceptance.rs",
+        "test": "v3_a_duplicate_metering_batch_applies_once_after_restart",
+        "line": 831,
+        "end_line": 846,
+        "assertion_sites": 6,
+        "assertions": [
+          {
+            "line": 838,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));"
+          },
+          {
+            "line": 839,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));"
+          },
+          {
+            "line": 841,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(total(&s), 4);"
+          },
+          {
+            "line": 843,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));"
+          },
+          {
+            "line": 844,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));"
+          },
+          {
+            "line": 845,
+            "macro": "assert_eq",
+            "source_line": "assert_eq!(total(&s), 4);"
+          }
+        ],
+        "expect_err_sites": 0,
+        "unwrap_err_sites": 0
+      },
+      "destination": "store-memory-plugin/tests/store_money_acceptance.rs",
+      "test": "v3_a_duplicate_metering_batch_applies_once_after_restart",
+      "status": "source-transferred-unbuilt"
+    }
+  ],
+  "qualification": "No builds authorized yet; source transfer is not deletion ACK or runtime equivalence. SDK pins and Cargo.lock unchanged.",
+  "intentional_real_product_adjustments": [
+    "secret_refs is exactly token (fake expected empty)",
+    "fresh memory after restart is empty, no durable recovery claim",
+    "opid true replay uses same actual memory handle; fake db settings removed",
+    "Exact StoreFacts transaction/correction/rewrap are true: actual v3 EXTENSIONS declares all three, while deleted fixture declared false. Existing conditional_records_tests, usage_correction_tests and lib_tests rewrap controls independently exercise these actual behaviors.",
+    "Legacy metering ceiling is exactly i64::MAX, per authored R17 cb5a9485124335dbce0af57e4f71dd53117797a2 and 02b3ec8acdad3e70b8a8ede2a9903b43c42985d9; raw usage remains u64::MAX. Original huge-input metering assertions retained with exact signed ceiling; added below/at/above controls on all four actual subjects."
+  ]
+}

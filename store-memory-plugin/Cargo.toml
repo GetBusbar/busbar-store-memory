@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-store-memory-plugin"
+version = "1.6.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "First-party signed kind:store plugin cdylib: the in-memory store, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+
+[lints]
+workspace = true
+
+[lib]
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
+# rlib: what `cargo test` links; build the cdylib explicitly before dropped-door tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door` is the door this image exports. A busbar build that LINKS the
+# store names the logic crate, with no door symbol.
+busbar-store-memory = { path = "../store-memory" }
+# The `export_door!` macro (the one `unsafe` in the repo) lives here, not in the logic crate.
+busbar-contract = { workspace = true }
+
+[dev-dependencies]
+busbar-plugin-loader = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "net"] }
+serde_json = { workspace = true }

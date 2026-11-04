@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-store-memory"
+version = "1.6.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The in-memory (RAM) backend for busbar's governance store — ephemeral, zero-setup."
+
+[lints]
+workspace = true
+
+[lib]
+# rlib: the LINKED door (a busbar build holds this crate's store v3 `door` as its compiled-in row,
+# `linked::STORE`). The DROPPED-IN door is the sibling `busbar-store-memory-plugin` cdylib, which
+# holds the one `export_door!`; this crate stays `forbid(unsafe_code)` and defines no door symbol.
+crate-type = ["rlib"]
+
+# DEPENDENCY POLICY. A plugin's busbar closure is busbar-contract and nothing else; third-party crates
+# come from the workspace table (`{ workspace = true }`), which is busbar's dependency policy.
+[dependencies]
+# The record half of the store protocol. `busbar_contract::abi::sdk::store::StoreSlots` declares
+# `record_put`, `record_get` and `record_scan` for a plane's kernel-held durable records, and this
+# backend answers them at the contract's own spelling. busbar-contract is the ONE busbar crate a
+# plugin names, pinned by git rev to the busbar commit in `.busbar-ref` (the workspace row).
+busbar-contract = { workspace = true }
+# The store takes no settings (a 1.5.5 `token` is accepted and ignored); `validate`/`open` parse
+# them only to refuse malformed JSON and other keys.
+serde_json = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+# The conformance suites (tests/) serialise typed rows into the opaque `PlaneRecord` body as core
+# does; that is all they need serde for.
+serde = { workspace = true }
