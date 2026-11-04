@@ -12,19 +12,35 @@ Thanks for your interest in improving `busbar-store-memory`.
 
 ## Layout
 
-Every busbar plugin repo has the same shape. This one is a two-crate Cargo workspace:
-`store-memory/` holds the plugin's logic and `store-memory-plugin/` is the thin `cdylib` that
-packages it as a droppable `kind: store` plugin. busbar itself is a git dependency
-pinned to the commit in `.busbar-ref`. The CI, release and lint configuration are
-rendered from [busbar's plugin registry](https://github.com/GetBusbar/busbar/blob/main/plugins.yaml);
-change them there, not here.
+Every busbar plugin repo has the same skeleton. This one is a two-crate Cargo workspace: `store-memory/` holds the plugin's logic and `store-memory-plugin/` is the thin `cdylib` that packages it as a droppable `kind: store` plugin. busbar itself is a git dependency
+pinned to the commit in `.busbar-ref`. The CI, release, dependency and lint configuration
+are rendered by `busbar-release plugin heal` from the fleet template (GetBusbar/busbar-release
+`template/`), [busbar's plugin registry](https://github.com/GetBusbar/busbar/blob/main/plugins.yaml)
+and busbar's dependency policy (`.github/fleet/deps.toml` and the root `[workspace.dependencies]`
+at the pin); change them there, not here.
+
+## This repo tests itself against busbar
+
+CI calls busbar's reusable `plugin-ci.yml` at the commit in `.busbar-ref`. It runs formatting,
+strict Clippy, dependency checks and this repository's ordinary Rust tests. The tests load the
+actual linked door and the freshly built library through the public plugin loader. CI exports the
+absolute library path as `BUSBAR_PLUGIN_CDYLIB`; a missing library fails the tests.
+
+Keep product assertions in this repository. Exercise both actual loading paths and retain negative
+cases that distinguish a refused input or failed operation from success. There is no shared kind
+script or generated host adapter. Configure any real service backends and existing test-only
+features in this repository's registry entry; test-image features do not change production builds.
+
+The plugin keeps its own `Cargo.lock`. Heal seeds its resolution from busbar's lock at the pin;
+this does not make the two complete dependency graphs or every resolved version identical.
 
 ## Before you open a pull request
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+cargo build --release --locked -p busbar-store-memory-plugin --lib
+BUSBAR_PLUGIN_CDYLIB="$PWD/target/release/libbusbar_store_memory_plugin.so" cargo test --release --workspace --locked
 ```
 
 The README's Tests section names any live backend the full suite needs. Add or update
