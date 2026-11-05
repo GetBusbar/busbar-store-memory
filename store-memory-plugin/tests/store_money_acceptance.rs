@@ -39,7 +39,7 @@ fn subjects() -> Vec<Subject> {
     ]
 }
 
-fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i64)]) -> UsageDelta {
+fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i128)]) -> UsageDelta {
     UsageDelta {
         requests,
         billable_requests: billable,
@@ -60,7 +60,7 @@ fn meter(
     bucket: u64,
     model: &str,
     provider: &str,
-    input: u64,
+    input: i128,
     reqs: u64,
 ) -> MeteringDelta {
     MeteringDelta {
@@ -82,7 +82,7 @@ fn meter(
     }
 }
 
-fn tier(ledger: &UsageLedger, model: &str, unit: &str) -> u64 {
+fn tier(ledger: &UsageLedger, model: &str, unit: &str) -> i128 {
     ledger
         .models
         .iter()
@@ -136,7 +136,7 @@ fn add_usage_is_additive_across_flushes() {
 #[test]
 fn nodes_flushing_one_cell_sum_to_the_fleet_total() {
     for s in subjects() {
-        for node in 0..3i64 {
+        for node in 0..3i128 {
             for _ in 0..4 {
                 s.store
                     .add_usage("team", DAY, &delta(1, 1, "m", &[(UNIT_OUTPUT, node + 1)]))
@@ -290,7 +290,10 @@ fn put_usage_sets_absolutely_and_add_usage_adds_on_top() {
             .add_usage("k", DAY, &delta(7, 7, "m", &[(UNIT_INPUT, 70)]))
             .expect("a");
         let mut set = UsageLedger::default();
-        set.apply_delta(&delta(2, 1, "m", &[(UNIT_INPUT, 20)]));
+        set.checked_apply_delta(&delta(2, 1, "m", &[(UNIT_INPUT, 20)]))
+            .unwrap();
+        assert_eq!(set.models[0].scale, 6, "{}", s.door);
+        assert_eq!(set.total_input(), 20, "{}: scale-six micro-units", s.door);
         s.store.put_usage("k", DAY, &set).expect("set");
         assert_eq!(
             s.store.get_usage("k", DAY).expect("read"),
@@ -303,6 +306,7 @@ fn put_usage_sets_absolutely_and_add_usage_adds_on_top() {
             .expect("b");
         let got = s.store.get_usage("k", DAY).expect("read");
         assert_eq!((got.requests, got.billable_requests), (3, 2), "{}", s.door);
+        assert_eq!(got.models[0].scale, 6, "{}", s.door);
         assert_eq!(tier(&got, "m", UNIT_INPUT), 21, "{}", s.door);
     }
 }
@@ -336,32 +340,52 @@ fn one_coalesced_usage_delta_equals_its_singles() {
 }
 
 #[test]
-fn usage_counters_saturate_not_wrap() {
+fn request_counters_saturate_without_scaling_or_wrapping() {
     for s in subjects() {
-        s.store
-            .add_usage(
-                "k",
-                DAY,
-                &delta(i64::MAX, 0, "m", &[(UNIT_INPUT, i64::MAX)]),
-            )
-            .expect("a");
-        s.store
-            .add_usage(
-                "k",
-                DAY,
-                &delta(i64::MAX, 0, "m", &[(UNIT_INPUT, i64::MAX)]),
-            )
-            .expect("b");
-        s.store
-            .add_usage(
-                "k",
-                DAY,
-                &delta(i64::MAX, 0, "m", &[(UNIT_INPUT, i64::MAX)]),
-            )
-            .expect("c");
+        for _ in 0..3 {
+            s.store
+                .add_usage("k", DAY, &delta(i64::MAX, i64::MAX, "m", &[]))
+                .expect("request-only accrual");
+        }
         let got = s.store.get_usage("k", DAY).expect("read");
         assert_eq!(got.requests, u64::MAX, "{}", s.door);
-        assert_eq!(tier(&got, "m", UNIT_INPUT), u64::MAX, "{}", s.door);
+        assert_eq!(got.billable_requests, u64::MAX, "{}", s.door);
+        assert!(got.models.is_empty(), "{}", s.door);
+
+        s.store
+            .add_metering(&meter("k", DAY, "m", "p", 0, u64::MAX))
+            .expect("full-width request counters");
+        s.store
+            .add_metering(&meter("k", DAY, "m", "p", 0, 1))
+            .expect("request counters saturate");
+        let rows = s.store.list_metering(DAY).expect("metering");
+        assert_eq!(rows[0].requests, u64::MAX, "{}", s.door);
+        assert_eq!(rows[0].billable_requests, u64::MAX, "{}", s.door);
+        assert_eq!(rows[0].tokens_input, 0, "{}", s.door);
+    }
+}
+
+#[test]
+fn usage_quantity_overflow_refuses_without_changing_any_counter() {
+    for s in subjects() {
+        s.store
+            .add_usage("k", DAY, &delta(1, 1, "m", &[(UNIT_INPUT, i128::MAX)]))
+            .expect("exact quantity boundary");
+        let before = s.store.get_usage("k", DAY).expect("read");
+        assert_eq!(tier(&before, "m", UNIT_INPUT), i128::MAX, "{}", s.door);
+        assert!(
+            s.store
+                .add_usage("k", DAY, &delta(1, 1, "m", &[(UNIT_INPUT, 1)]))
+                .is_err(),
+            "{}",
+            s.door
+        );
+        assert_eq!(
+            s.store.get_usage("k", DAY).expect("read"),
+            before,
+            "{}",
+            s.door
+        );
     }
 }
 
@@ -508,26 +532,28 @@ fn list_metering_answers_only_the_bucket_asked() {
 }
 
 #[test]
-fn metering_counters_add_and_saturate() {
-    // R17 (cb5a948), retained by unsigned-usage correction 02b3ec8:
-    // legacy metering shares the fleet's signed-column ceiling; raw usage remains u64.
-    const MAX_METERING_COUNTER: u64 = i64::MAX as u64;
+fn metering_out_of_range_quantities_refuse_without_creating_or_changing_rows() {
     for s in subjects() {
-        let mut big = meter("k", DAY, "m", "p", u64::MAX, 1);
-        big.usage_units.insert("tool_calls".into(), u64::MAX - 1);
-        let mut small = meter("k", DAY, "m", "p", 1, 1);
-        small.usage_units.insert("tool_calls".into(), 5);
-        s.store.add_metering(&big).expect("big");
-        s.store.add_metering(&small).expect("small");
-        let r = &s.store.list_metering(DAY).expect("list")[0];
-        assert_eq!(r.tokens_input, MAX_METERING_COUNTER, "{}", s.door);
-        assert_eq!(
-            r.usage_units.get("tool_calls"),
-            Some(&MAX_METERING_COUNTER),
+        let mut big = meter("k", DAY, "m", "p", i128::MAX, 1);
+        big.scale = 0;
+        big.usage_units.insert("tool_calls".into(), i128::MAX - 1);
+        assert!(s.store.add_metering(&big).is_err(), "{}", s.door);
+        assert!(
+            s.store.list_metering(DAY).expect("list").is_empty(),
             "{}",
             s.door
         );
-        assert_eq!(r.requests, 2, "{}", s.door);
+        s.store
+            .add_metering(&meter("k", DAY, "m", "p", 1, 1))
+            .expect("representable row");
+        let before = s.store.list_metering(DAY).expect("list");
+        assert!(s.store.add_metering(&big).is_err(), "{}", s.door);
+        assert_eq!(
+            s.store.list_metering(DAY).expect("list"),
+            before,
+            "{}",
+            s.door
+        );
     }
 }
 
@@ -701,12 +727,13 @@ fn op(n: u8) -> v3::OpId {
     v3::OpId([n; 16])
 }
 
-/// Check each side of the legacy signed-column ceiling, independently of the huge-input control.
+/// Quantities remain exact through their boundary; an overflow changes no part of the row.
 #[test]
-fn metering_preserves_below_ceiling_counts_then_pins_at_the_exact_signed_ceiling() {
-    const MAX_METERING_COUNTER: u64 = i64::MAX as u64;
+fn metering_quantity_boundary_is_exact_and_overflow_refuses_the_whole_row() {
+    const MAX_METERING_COUNTER: i128 = i128::MAX;
     for s in subjects() {
         let mut near = meter("boundary", DAY, "m", "p", MAX_METERING_COUNTER - 1, 1);
+        near.tokens_output = 0;
         near.usage_units
             .insert("tool_calls".into(), MAX_METERING_COUNTER - 1);
         s.store.add_metering(&near).expect("below ceiling");
@@ -726,6 +753,7 @@ fn metering_preserves_below_ceiling_counts_then_pins_at_the_exact_signed_ceiling
             s.door
         );
         let mut one = meter("boundary", DAY, "m", "p", 1, 1);
+        one.tokens_output = 0;
         one.usage_units.insert("tool_calls".into(), 1);
         s.store.add_metering(&one).expect("at ceiling");
         assert_eq!(
@@ -734,11 +762,12 @@ fn metering_preserves_below_ceiling_counts_then_pins_at_the_exact_signed_ceiling
             "{}: exact ceiling is representable",
             s.door
         );
-        s.store.add_metering(&one).expect("above ceiling");
+        let before = s.store.list_metering(DAY).expect("snapshot at ceiling");
+        assert!(s.store.add_metering(&one).is_err(), "{}", s.door);
         assert_eq!(
-            read(),
-            (MAX_METERING_COUNTER, MAX_METERING_COUNTER, 3),
-            "{}: overflow pins while ordinary counts keep adding",
+            s.store.list_metering(DAY).expect("read after refusal"),
+            before,
+            "{}: overflow must not change quantities or request counters",
             s.door
         );
     }

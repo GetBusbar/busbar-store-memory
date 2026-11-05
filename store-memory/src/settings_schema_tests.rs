@@ -11,9 +11,9 @@ fn settings_schema_matches_lifecycle_shapes() {
     let cases: &[(&str, bool)] = &[
         (r#"{}"#, true),
         (r#"null"#, true),
-        (r#"{"token":null}"#, true),
-        (r#"{"token":{"env":"EXAMPLE_TOKEN"}}"#, true),
-        (r#"{"token":[]}"#, true),
+        (r#"{"token":null}"#, false),
+        (r#"{"token":{"env":"EXAMPLE_TOKEN"}}"#, false),
+        (r#"{"token":[]}"#, false),
         (r#"{"unknown":0}"#, false),
         (r#"[]"#, false),
         (r#""""#, false),
@@ -31,11 +31,9 @@ fn settings_schema_matches_lifecycle_shapes() {
 }
 
 #[test]
-fn settings_schema_marks_secret_fields_without_defaults() {
+fn settings_schema_declares_no_settings() {
     let schema: serde_json::Value =
         serde_json::from_slice(include_bytes!("settings.schema.json")).unwrap();
-    let field = &schema["properties"]["token"];
-    assert_eq!(field["writeOnly"], true);
-    assert_eq!(field["x-busbar-secret"], true);
-    assert!(field.get("default").is_none());
+    assert!(schema["properties"].as_object().unwrap().is_empty());
+    assert_eq!(schema["additionalProperties"], false);
 }

@@ -11,7 +11,7 @@ fn block<T>(f: impl std::future::Future<Output = T>) -> T {
         .block_on(f)
 }
 
-fn delta(requests: i64, input: i64) -> UsageDelta {
+fn delta(requests: i64, input: i128) -> UsageDelta {
     UsageDelta {
         requests,
         billable_requests: requests,

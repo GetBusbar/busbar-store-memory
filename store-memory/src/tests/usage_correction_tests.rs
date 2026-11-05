@@ -76,11 +76,11 @@ fn store() -> MemoryStore {
     store
 }
 fn ledger(count: u64) -> UsageLedger {
-    ledger_parts(count, count)
+    ledger_parts(count, i128::from(count))
 }
 
 /// Request width and quantity width are independent: these fixtures state both explicitly.
-fn ledger_parts(requests: u64, quantity: u64) -> UsageLedger {
+fn ledger_parts(requests: u64, quantity: i128) -> UsageLedger {
     UsageLedger {
         requests,
         billable_requests: requests,
@@ -143,7 +143,11 @@ fn delta(count: i64) -> UsageDelta {
         models: vec![ModelTokensDelta {
             scale: 6,
             model: "model".into(),
-            usage_units: [(UNIT_INPUT.into(), count), ("open-class".into(), count)].into(),
+            usage_units: [
+                (UNIT_INPUT.into(), i128::from(count)),
+                ("open-class".into(), i128::from(count)),
+            ]
+            .into(),
         }],
     }
 }
@@ -347,28 +351,28 @@ fn exact_unsigned_replacement_and_canonical_models_do_not_narrow_or_saturate() {
         vec![change(
             "plain",
             UsageLedger::default(),
-            ledger_parts(high, i64::MAX as u64 - 1),
+            ledger_parts(high, i128::MAX - 1),
         )],
     );
     assert_eq!(correct(&store, &seed), Ok(Decision::Applied));
     assert_eq!(
         store.get_usage("plain", 0).unwrap(),
-        ledger_parts(high, i64::MAX as u64 - 1)
+        ledger_parts(high, i128::MAX - 1)
     );
     let mut stale = request(
         2,
         vec![change(
             "plain",
             ledger(i64::MAX as u64),
-            ledger_parts(high - 1, i64::MAX as u64 - 2),
+            ledger_parts(high - 1, i128::MAX - 2),
         )],
     );
     assert_eq!(correct(&store, &stale), Ok(Decision::ConditionConflict));
-    stale.usage[0].expected = ledger_parts(high, i64::MAX as u64 - 1);
+    stale.usage[0].expected = ledger_parts(high, i128::MAX - 1);
     assert_eq!(correct(&store, &stale), Ok(Decision::Applied));
     assert_eq!(
         store.get_usage("plain", 0).unwrap(),
-        ledger_parts(high - 1, i64::MAX as u64 - 2)
+        ledger_parts(high - 1, i128::MAX - 2)
     );
     let mut unordered = ledger(1);
     let mut second = unordered.models[0].clone();
@@ -418,18 +422,18 @@ fn correction_high_unsigned_counts_survive_ordinary_accrual_refund_batch_and_abs
         ledger_parts(high + 5, 100 + 5)
     );
     store
-        .put_usage("plain", 0, &ledger_parts(u64::MAX - 1, i64::MAX as u64 - 1))
+        .put_usage("plain", 0, &ledger_parts(u64::MAX - 1, i128::MAX - 1))
         .unwrap();
     assert!(store.add_usage("plain", 0, &delta(5)).is_err());
     store.add_usage("plain", 0, &delta(1)).unwrap();
     assert_eq!(
         store.get_usage("plain", 0).unwrap(),
-        ledger_parts(u64::MAX, i64::MAX as u64)
+        ledger_parts(u64::MAX, i128::MAX)
     );
     store.add_usage("plain", 0, &delta(-5)).unwrap();
     assert_eq!(
         store.get_usage("plain", 0).unwrap(),
-        ledger_parts(u64::MAX - 5, i64::MAX as u64 - 5)
+        ledger_parts(u64::MAX - 5, i128::MAX - 5)
     );
     store.add_usage("empty", 0, &delta(-5)).unwrap();
     assert_eq!(store.get_usage("empty", 0).unwrap().requests, 0);
@@ -443,7 +447,7 @@ fn correction_high_unsigned_counts_survive_ordinary_accrual_refund_batch_and_abs
     assert_eq!(correct(&store, &candidate), Ok(Decision::Applied));
     assert_eq!(
         store.get_usage("plain", 0).unwrap(),
-        ledger_parts(u64::MAX - 5, i64::MAX as u64 - 5)
+        ledger_parts(u64::MAX - 5, i128::MAX - 5)
     );
 }
 

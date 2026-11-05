@@ -913,7 +913,7 @@ impl Store for MemoryStore {
 }
 
 /// The memory store takes no settings: empty, whitespace, `null` and `{}` are all "none"; malformed
-/// JSON, a non-object, or any key but `token` (accepted and ignored) is refused.
+/// JSON, a non-object, or any setting key is refused.
 pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
     if settings.trim_ascii().is_empty() {
         return Ok(());
@@ -922,10 +922,10 @@ pub(crate) fn check_settings(settings: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("invalid memory plugin config: {e}"))?;
     match v {
         serde_json::Value::Null => Ok(()),
-        serde_json::Value::Object(m) => match m.keys().find(|k| *k != "token") {
+        serde_json::Value::Object(m) => match m.keys().next() {
             None => Ok(()),
             Some(k) => Err(format!(
-                "invalid memory plugin config: unknown setting `{k}` (accepted: token)"
+                "invalid memory plugin config: unknown setting `{k}` (accepted: none)"
             )),
         },
         other => {
@@ -954,6 +954,7 @@ pub mod linked {
         ("memory", true, super::MACRO_DOOR, "busbar-store-memory");
 }
 
+mod migration;
 mod v3;
 
 #[cfg(test)]

@@ -246,7 +246,7 @@ fn rewrap_refusals_and_noops_do_not_consume_a_global_revision() {
     );
 }
 
-fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
+fn ledger(requests: u64, model: &str, input: i128, output: i128) -> UsageLedger {
     UsageLedger {
         requests,
         billable_requests: requests,
@@ -294,7 +294,7 @@ fn add_usage_accumulates_per_model() {
             scale: 6,
             model: "gpt-5".to_string(),
             usage_units: std::collections::BTreeMap::from([
-                (busbar_contract::records::UNIT_INPUT.to_string(), 10i64),
+                (busbar_contract::records::UNIT_INPUT.to_string(), 10i128),
                 (busbar_contract::records::UNIT_OUTPUT.to_string(), 5),
                 (busbar_contract::records::UNIT_CACHE_READ.to_string(), 1),
             ]),
@@ -1448,7 +1448,7 @@ fn metering_rows_split_on_priced_from_and_provider_and_sum_units() {
         key_group_at_use: String::new(),
         pricing_version: String::new(),
         priced_from_ms: 100,
-        usage_units: [("a".to_string(), 2u64), ("b".to_string(), 3)]
+        usage_units: [("a".to_string(), 2i128), ("b".to_string(), 3)]
             .into_iter()
             .collect(),
     };
@@ -1756,7 +1756,7 @@ fn purging_tasks_takes_their_event_chains() {
 #[test]
 fn usage_requests_keep_unsigned_range_and_quantity_overflow_refuses() {
     let s = MemoryStore::new();
-    let max = i64::MAX as u64;
+    let max = i128::MAX;
     s.put_usage("a", 0, &ledger(u64::MAX, "m", max, 7)).unwrap();
     let before = s.get_usage("a", 0).unwrap();
     assert_eq!(
@@ -1764,7 +1764,7 @@ fn usage_requests_keep_unsigned_range_and_quantity_overflow_refuses() {
         (u64::MAX, u64::MAX)
     );
     assert_eq!((before.total_input(), before.total_output()), (max, 7));
-    assert!(s.put_usage("a", 0, &ledger(0, "m", u64::MAX, 0)).is_err());
+    assert!(s.put_usage("a", 0, &ledger(0, "m", -1, 0)).is_err());
     let delta = UsageDelta {
         requests: 1,
         billable_requests: 1,

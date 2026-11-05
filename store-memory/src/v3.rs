@@ -21,10 +21,8 @@ use busbar_contract::records::{
 
 use crate::{read, write, MemoryStore, MeteringKey};
 
-/// The settings paths this store declares may hold a secret reference (`secret_refs`): `token`, named
-/// rather than `*` because busbar resolves a reference only where the Statement declares one.
-const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
-    &[busbar_contract::abi::sdk::door::abi_str("token")];
+/// The memory store takes no settings and requires no secret references.
+const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] = &[];
 
 /// The most ops the host may hold in flight: the memory store answers every op inline and never
 /// pends, so this only bounds a flood.
@@ -34,6 +32,7 @@ busbar_contract::statement_extensions!(EXTENSIONS: [
     (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1"),
     (conditional::CAPABILITY, b"1"),
     ("busbar.store.count-scale", b"6"),
+    ("busbar.store.count-range", b"i128"),
     (correction::CAPABILITY, correction::CAPABILITY_VALUE)
 ]);
 
@@ -48,7 +47,8 @@ busbar_contract::store_door!(
     MAX_INFLIGHT,
     extensions: EXTENSIONS,
     secret_refs: SECRET_REFS,
-    settings_schema: SETTINGS_SCHEMA
+    settings_schema: SETTINGS_SCHEMA,
+    migrate: busbar_contract::abi::sdk::migrate::Migrator<crate::migration::MemoryMigration>
 );
 
 #[derive(Default)]
@@ -134,7 +134,7 @@ impl MemoryStore {
     fn deduped(
         &self,
         op: OpId,
-        d: Dedupe<'_>,
+        d: Dedupe,
         apply: impl FnOnce(&Self) -> RecordStoreResult<()>,
     ) -> OpResult<()> {
         d.run(
@@ -555,7 +555,12 @@ impl StoreSlots for MemoryStore {
         crate::check_settings(settings)
     }
 
-    fn open(settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+    // Memory declares no secret fields or outbound needs: opening only allocates local RAM.
+    fn open_with_secrets(
+        settings: &[u8],
+        _secrets: &[&[u8]],
+        _host: Option<Host>,
+    ) -> Result<Self, String> {
         crate::check_settings(settings)?;
         Ok(Self::new())
     }

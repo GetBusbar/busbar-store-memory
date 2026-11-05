@@ -13,7 +13,7 @@ fn op(n: u64) -> OpId {
     OpId::from_parts(7, n)
 }
 
-fn delta(requests: i64, input: i64) -> UsageDelta {
+fn delta(requests: i64, input: i128) -> UsageDelta {
     UsageDelta {
         requests,
         billable_requests: requests,

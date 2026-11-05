@@ -137,7 +137,7 @@ fn exercise(dropped: bool) -> BTreeMap<&'static str, String> {
         }
     }
 
-    fn delta(requests: i64, input: i64) -> UsageDelta {
+    fn delta(requests: i64, input: i128) -> UsageDelta {
         UsageDelta {
             requests,
             billable_requests: requests,
@@ -149,7 +149,7 @@ fn exercise(dropped: bool) -> BTreeMap<&'static str, String> {
         }
     }
 
-    fn meter(key_id: &str, provider: &str, input: u64) -> MeteringDelta {
+    fn meter(key_id: &str, provider: &str, input: i128) -> MeteringDelta {
         MeteringDelta {
             scale: 6,
             key_id: key_id.into(),
@@ -277,12 +277,20 @@ fn exercise(dropped: bool) -> BTreeMap<&'static str, String> {
     answers.insert("usage", ans(b.get_usage(ub, w)));
     assert_eq!(first_calls() - before, 2, "usage");
     let mut set = UsageLedger::default();
-    set.apply_delta(&delta(9, 1));
+    set.checked_apply_delta(&delta(9, 1)).unwrap();
+    assert_eq!(set.models[0].scale, 6);
+    assert_eq!(
+        set.total_input(),
+        1,
+        "the scale-six fixture carries one micro-unit"
+    );
     let before = first_calls();
     answers.insert("put usage", ans(b.put_usage("j", w * 2, &set)));
     assert_eq!(first_calls() - before, 1, "put usage");
     let before = first_calls();
-    answers.insert("usage j", ans(b.get_usage("j", w * 2)));
+    let restored = b.get_usage("j", w * 2);
+    assert_eq!(restored.as_ref().expect("absolute usage reads back"), &set);
+    answers.insert("usage j", ans(restored));
     assert_eq!(first_calls() - before, 2, "usage j");
     let before = first_calls();
     answers.insert("usage again", ans(b.get_usage(ub, w)));
@@ -901,7 +909,7 @@ fn the_statement_declares_exactly_its_secret_fields() {
         &dispatch::rendering_of(busbar_store_memory::door).expect("the door renders"),
     )
     .expect("the rendering reads back");
-    assert_eq!(stated.secret_refs, ["token".to_string()]);
+    assert!(stated.secret_refs.is_empty());
 }
 
 #[test]

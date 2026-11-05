@@ -31,12 +31,12 @@ retention. Idle stores can retain expired entries until that activity resumes.
 
 Configured under the `memory` module name.
 
-| setting | type | default | meaning |
-|---|---|---|---|
-| `token` | any | absent | accepted and ignored (a 1.5.5 config key; it may hold a secret reference) |
-
-The store takes no other settings: an empty value, `null` and `{}` all mean none, and any other
-key is refused (``unknown setting `k` (accepted: token)``).
+The store takes no settings or secret references: an empty value, `null` and `{}` all mean none,
+and every setting key is refused (``unknown setting `k` (accepted: none)``).
+When upgrading older configuration, `busbar --migrate-config` calls this plugin's one-shot
+migration to remove the formerly ignored `store.settings.token` before secret resolution.
+This applies to both `memory` and `busbar-store-memory`. The migration reports the removal
+without resolving or displaying the discarded value; repeating it makes no further change.
 
 ## Versioning
 

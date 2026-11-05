@@ -34,7 +34,7 @@ fn settings_refuse_malformed_json_and_any_key() {
         .unwrap_err();
     assert_eq!(
         e,
-        "invalid memory plugin config: unknown setting `x` (accepted: token)"
+        "invalid memory plugin config: unknown setting `x` (accepted: none)"
     );
     assert!(
         <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open_with_secrets(
@@ -49,34 +49,31 @@ fn settings_refuse_malformed_json_and_any_key() {
     assert!(e.starts_with("invalid memory plugin config: "), "{e}");
 }
 
-/// A 1.5.5 memory config carried `token` (the door declares it in `secret_refs`): accepted, any JSON value, and ignored.
+/// Migration removes the formerly ignored token field; the runtime accepts no settings.
 #[test]
-fn settings_accept_and_ignore_a_token() {
-    for ok in [
+fn settings_refuse_the_retired_token() {
+    for rejected in [
         r#"{"token":"x"}"#,
         r#"{"token":{"env":"X"}}"#,
         r#"{"token":null}"#,
     ] {
-        assert_eq!(
-            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(ok.as_bytes()),
-            Ok(()),
-            "{ok}"
+        assert!(
+            <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(
+                rejected.as_bytes()
+            )
+            .is_err(),
+            "{rejected}"
         );
         assert!(
             <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::open_with_secrets(
-                ok.as_bytes(),
+                rejected.as_bytes(),
                 &[],
                 None
             )
-            .is_ok(),
-            "{ok}"
+            .is_err(),
+            "{rejected}"
         );
     }
-    let e = <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::validate(
-        br#"{"token":"x","x":1}"#,
-    )
-    .unwrap_err();
-    assert!(e.contains("unknown setting `x`"), "{e}");
 }
 
 /// The non-object refusal names the JSON type, never the value (it may be a mis-nested secret).

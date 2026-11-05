@@ -8,7 +8,7 @@ use busbar_contract::records::{
 };
 use std::collections::BTreeMap;
 
-fn delta(scale: u32, amount: i64, requests: i64) -> UsageDelta {
+fn delta(scale: u32, amount: i128, requests: i64) -> UsageDelta {
     UsageDelta {
         requests,
         billable_requests: requests,
@@ -23,7 +23,7 @@ fn delta(scale: u32, amount: i64, requests: i64) -> UsageDelta {
     }
 }
 
-fn meter(key: &str, scale: u32, amount: u64, requests: u64) -> MeteringDelta {
+fn meter(key: &str, scale: u32, amount: i128, requests: u64) -> MeteringDelta {
     MeteringDelta {
         scale,
         key_id: key.into(),
@@ -82,10 +82,7 @@ fn exercise(store: &dyn RecordStore, key: &str) {
     assert_eq!(got.usage_units["audio_seconds"], 2_123_456);
     let op = OpId::from_parts(0xe81, 3);
     assert!(store
-        .add_metering_batch_deduped(
-            op,
-            &[meter(key, 6, 1, 1), meter(key, 6, i64::MAX as u64, 1)]
-        )
+        .add_metering_batch_deduped(op, &[meter(key, 6, 1, 1), meter(key, 6, i128::MAX, 1)])
         .is_err());
     assert_eq!(
         store.list_metering(0).unwrap(),
@@ -102,7 +99,7 @@ fn exercise(store: &dyn RecordStore, key: &str) {
         models: vec![ModelTokens {
             scale: 6,
             model: "exact-model".into(),
-            usage_units: BTreeMap::from([("input".into(), i64::MAX as u64)]),
+            usage_units: BTreeMap::from([("input".into(), i128::MAX)]),
         }],
     };
     store.put_usage(key, 0, &max).unwrap();
@@ -122,6 +119,189 @@ fn exercise(store: &dyn RecordStore, key: &str) {
     );
     assert!(store.add_usage(key, 2, &delta(3, 1, 1)).is_err());
     assert_eq!(store.get_usage(key, 2).unwrap(), UsageLedger::default());
+    exercise_wide(store, key);
+}
+
+fn exercise_wide(store: &dyn RecordStore, key: &str) {
+    use busbar_contract::records::correction::{
+        canonical_metering, Decision, Request, UsageAddress, UsageChange, VERSION,
+    };
+
+    // Exceed both old machine-word quantity domains without changing request counters.
+    let wide = i128::from(u64::MAX) + 17;
+    let bucket = format!("{key}-wide");
+    store.add_usage(&bucket, 0, &delta(6, wide, 1)).unwrap();
+    let op = OpId::from_parts(0xe82, 1);
+    let cells = [(bucket.as_str(), 0, delta(6, wide + 1, 2))];
+    store.add_usage_batch_deduped(op, &cells).unwrap();
+    store.add_usage_batch_deduped(op, &cells).unwrap();
+    let before = store.get_usage(&bucket, 0).unwrap();
+    assert_eq!((before.requests, before.billable_requests), (3, 3));
+    assert_eq!(before.models[0].scale, 6);
+    assert_eq!(before.models[0].usage_units["input"], 2 * wide + 1);
+    assert_eq!(before.models[0].usage_units["audio_seconds"], 2 * wide + 1);
+    assert!(store
+        .add_usage_batch_deduped(op, &[(bucket.as_str(), 0, delta(6, wide + 2, 2))])
+        .is_err());
+    assert_eq!(store.get_usage(&bucket, 0).unwrap(), before);
+
+    // Ordinary refunds still floor at zero, including MIN when checked addition is valid.
+    let refund_bucket = format!("{key}-refund");
+    store
+        .add_usage(&refund_bucket, 0, &delta(6, wide, 1))
+        .unwrap();
+    store
+        .add_usage(&refund_bucket, 0, &delta(6, i128::MIN, 0))
+        .unwrap();
+    let refunded = store.get_usage(&refund_bucket, 0).unwrap();
+    assert_eq!((refunded.requests, refunded.billable_requests), (1, 1));
+    assert!(refunded.models[0]
+        .usage_units
+        .values()
+        .all(|amount| *amount == 0));
+    let refund_op = OpId::from_parts(0xe82, 6);
+    let refund_cells = [
+        (refund_bucket.as_str(), 1, delta(6, wide, 1)),
+        (refund_bucket.as_str(), 1, delta(6, i128::MIN, 0)),
+    ];
+    store
+        .add_usage_batch_deduped(refund_op, &refund_cells)
+        .unwrap();
+    store
+        .add_usage_batch_deduped(refund_op, &refund_cells)
+        .unwrap();
+    assert_eq!(store.get_usage(&refund_bucket, 1).unwrap(), refunded);
+
+    // A late scale-conversion overflow leaves every row and the operation receipt untouched.
+    let invalid_op = OpId::from_parts(0xe82, 2);
+    assert!(store
+        .add_usage_batch_deduped(
+            invalid_op,
+            &[
+                (bucket.as_str(), 1, delta(6, 1, 1)),
+                (bucket.as_str(), 0, delta(0, i128::MAX, 1)),
+            ],
+        )
+        .is_err());
+    assert_eq!(store.get_usage(&bucket, 0).unwrap(), before);
+    assert_eq!(store.get_usage(&bucket, 1).unwrap(), UsageLedger::default());
+    store
+        .add_usage_batch_deduped(invalid_op, &[(bucket.as_str(), 1, delta(6, 1, 1))])
+        .unwrap();
+
+    // Every metering quantity column and the open map survives the actual Store codec.
+    let mut quantities = meter(key, 6, wide, 1);
+    quantities.model = "wide-model".into();
+    quantities.tokens_output = wide + 1;
+    quantities.tokens_cache_read = wide + 2;
+    quantities.tokens_cache_write = wide + 3;
+    let meter_op = OpId::from_parts(0xe82, 3);
+    store
+        .add_metering_batch_deduped(meter_op, std::slice::from_ref(&quantities))
+        .unwrap();
+    store
+        .add_metering_batch_deduped(meter_op, std::slice::from_ref(&quantities))
+        .unwrap();
+    let mut metering = store.list_metering(0).unwrap();
+    let row = metering
+        .iter()
+        .find(|row| row.model == "wide-model")
+        .unwrap();
+    assert_eq!((row.requests, row.billable_requests, row.scale), (1, 1, 6));
+    assert_eq!(row.tokens_input, wide);
+    assert_eq!(row.tokens_output, wide + 1);
+    assert_eq!(row.tokens_cache_read, wide + 2);
+    assert_eq!(row.tokens_cache_write, wide + 3);
+    assert_eq!(row.usage_units["audio_seconds"], wide);
+    quantities.tokens_input += 1;
+    assert!(store
+        .add_metering_batch_deduped(meter_op, &[quantities])
+        .is_err());
+    assert_eq!(store.list_metering(0).unwrap(), metering);
+
+    // Whole-row correction compares wide metering and usage snapshots and reaches i128::MAX.
+    canonical_metering(&mut metering);
+    let mut replacement = before.clone();
+    for amount in replacement.models[0].usage_units.values_mut() {
+        *amount = i128::MAX;
+    }
+    let candidate = Request {
+        version: VERSION,
+        op_id: OpId::from_parts(0xe82, 4),
+        key_id: key.into(),
+        day_start: 0,
+        metering,
+        usage: vec![UsageChange {
+            address: UsageAddress {
+                bucket_id: bucket.clone(),
+                window_start: 0,
+            },
+            expected: before,
+            replacement: replacement.clone(),
+        }],
+    };
+    let encoded = candidate.encode().unwrap();
+    assert_eq!(Request::decode(&encoded).unwrap(), candidate);
+    let json = std::str::from_utf8(&encoded).unwrap();
+    assert!(json.contains(&format!("\"input\":{}", i128::MAX)));
+    assert_eq!(
+        store.apply_usage_correction(&candidate).unwrap(),
+        Decision::Applied
+    );
+    assert_eq!(
+        store.apply_usage_correction(&candidate).unwrap(),
+        Decision::Applied
+    );
+    assert_eq!(store.get_usage(&bucket, 0).unwrap(), replacement);
+    let mut changed = candidate.clone();
+    changed.usage[0].replacement.models[0]
+        .usage_units
+        .insert("input".into(), i128::MAX - 1);
+    assert!(store.apply_usage_correction(&changed).is_err());
+    assert_eq!(store.get_usage(&bucket, 0).unwrap(), replacement);
+
+    // A late negative replacement cannot publish an earlier valid replacement or consume the ID.
+    let correction_op = OpId::from_parts(0xe82, 5);
+    let empty = store.get_usage(&bucket, 1).unwrap();
+    let mut invalid = replacement.clone();
+    invalid.models[0]
+        .usage_units
+        .insert("input".into(), i128::MIN);
+    let mut rejected = Request {
+        op_id: correction_op,
+        usage: vec![
+            UsageChange {
+                address: UsageAddress {
+                    bucket_id: bucket.clone(),
+                    window_start: 0,
+                },
+                expected: replacement.clone(),
+                replacement: empty.clone(),
+            },
+            UsageChange {
+                address: UsageAddress {
+                    bucket_id: bucket.clone(),
+                    window_start: 1,
+                },
+                expected: empty.clone(),
+                replacement: invalid,
+            },
+        ],
+        ..candidate.clone()
+    };
+    assert!(store.apply_usage_correction(&rejected).is_err());
+    assert_eq!(store.get_usage(&bucket, 0).unwrap(), replacement);
+    assert_eq!(store.get_usage(&bucket, 1).unwrap(), empty);
+    rejected.usage[1].replacement = replacement;
+    assert_eq!(
+        store.apply_usage_correction(&rejected).unwrap(),
+        Decision::Applied
+    );
+    assert_eq!(store.get_usage(&bucket, 0).unwrap(), empty);
+    assert_eq!(
+        store.get_usage(&bucket, 1).unwrap(),
+        rejected.usage[1].replacement
+    );
 }
 
 #[test]
@@ -138,5 +318,30 @@ fn exact_counts_actual_linked_and_dynamic_store_batches() {
             })
             .unwrap();
         exercise(&store, "exact-counts");
+    }
+}
+
+#[test]
+fn actual_doors_explicitly_declare_signed_i128_quantity_range() {
+    use busbar_contract::abi::mechanism::{extensions, rendering};
+    use busbar_plugin_loader::dispatch;
+
+    for dropped in [false, true] {
+        let bytes = if dropped {
+            dispatch::rendering_of_library(&support::artifact())
+                .expect("actual library renders")
+                .expect("actual library exports its door")
+        } else {
+            dispatch::rendering_of(busbar_store_memory::door).expect("actual linked door renders")
+        };
+        let statement = rendering::read(&bytes).expect("actual Statement reads back");
+        assert_eq!(
+            extensions::get(&statement.extensions.bytes, "busbar.store.count-scale"),
+            Some(b"6".as_slice())
+        );
+        assert_eq!(
+            extensions::get(&statement.extensions.bytes, "busbar.store.count-range"),
+            Some(b"i128".as_slice())
+        );
     }
 }
