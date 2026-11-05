@@ -18,6 +18,7 @@ fn delta(requests: i64, input: i64) -> UsageDelta {
         requests,
         billable_requests: requests,
         models: vec![ModelTokensDelta {
+            scale: 6,
             model: "m".to_string(),
             usage_units: [("input".to_string(), input)].into_iter().collect(),
         }],
@@ -392,6 +393,7 @@ fn a_usage_batch_applies_its_cells_in_order() {
 fn a_metering_batch_replay_applies_once() {
     let s = MemoryStore::new();
     let d = MeteringDelta {
+        scale: 6,
         key_id: "k".into(),
         bucket: 86_400,
         model: "m".into(),
@@ -518,6 +520,7 @@ fn a_failed_append_does_not_record_its_op_id() {
 
 fn metering(priced_from_ms: u64) -> MeteringDelta {
     MeteringDelta {
+        scale: 6,
         key_id: "k".into(),
         bucket: 86_400,
         model: "m".into(),
@@ -672,6 +675,7 @@ fn billing_history_survives_repeated_writes_past_the_usage_retention_horizon() {
     s.pin_clock(n);
     let old = n - 40 * 86_400;
     let delta = MeteringDelta {
+        scale: 6,
         key_id: "old-bill".into(),
         bucket: old,
         model: "m".into(),
@@ -690,6 +694,7 @@ fn billing_history_survives_repeated_writes_past_the_usage_retention_horizon() {
     s.add_metering(&delta).unwrap();
     let original = s.list_metering(old).unwrap();
     let fresh = MeteringDelta {
+        scale: 6,
         key_id: "new-bill".into(),
         bucket: n,
         ..delta

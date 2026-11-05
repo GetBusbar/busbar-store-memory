@@ -6,7 +6,7 @@
 
 #![forbid(unsafe_code)]
 
-use busbar_contract::abi::sdk::store::column::{self, storable_i64};
+use busbar_contract::abi::sdk::store::column::storable_i64;
 use busbar_contract::abi::sdk::store::fork;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
@@ -148,11 +148,6 @@ pub(crate) fn check_plane(method: &str, record: PlaneRecordRef<'_>) -> StoreResu
 /// A metering delta's `priced_from_ms` is part of its key and must fit the signed column.
 pub(crate) fn check_metering(method: &str, d: &MeteringDelta) -> StoreResult<()> {
     storable_i64(method, "priced_from_ms", d.priced_from_ms).map(drop)
-}
-
-/// A legacy metering counter as a signed 64-bit column would hold it.
-fn pin(v: u64) -> u64 {
-    column::read_u64(column::clamp(v))
 }
 
 fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -358,11 +353,14 @@ impl MemoryStore {
         bucket_id: &str,
         window_start: u64,
         delta: &UsageDelta,
-    ) {
-        let ledger = usage
-            .entry((bucket_id.to_string(), window_start))
-            .or_default();
-        ledger.apply_delta(delta);
+    ) -> StoreResult<()> {
+        let key = (bucket_id.to_string(), window_start);
+        let mut ledger = usage.get(&key).cloned().unwrap_or_default();
+        ledger
+            .checked_apply_delta(delta)
+            .map_err(|e| StoreError(e.to_string()))?;
+        usage.insert(key, ledger);
+        Ok(())
     }
 
     fn check_legacy_usage_bucket(bucket: &str) -> StoreResult<()> {
@@ -382,42 +380,39 @@ impl MemoryStore {
         });
     }
 
-    fn apply_metering(m: &mut BTreeMap<MeteringKey, MeteringRow>, d: &MeteringDelta) {
-        let e = m
-            .entry((
-                d.bucket,
-                d.key_id.clone(),
-                d.model.clone(),
-                d.provider.clone(),
-                d.priced_from_ms,
-                d.key_group_at_use.clone(),
-                d.pricing_version.clone(),
-            ))
-            .or_insert_with(|| MeteringRow {
-                key_id: d.key_id.clone(),
-                model: d.model.clone(),
-                provider: d.provider.clone(),
-                tokens_input: 0,
-                tokens_output: 0,
-                tokens_cache_read: 0,
-                tokens_cache_write: 0,
-                requests: 0,
-                billable_requests: 0,
-                key_group_at_use: d.key_group_at_use.clone(),
-                pricing_version: d.pricing_version.clone(),
-                priced_from_ms: d.priced_from_ms,
-                usage_units: BTreeMap::new(),
-            });
-        e.tokens_input = pin(e.tokens_input.saturating_add(d.tokens_input));
-        e.tokens_output = pin(e.tokens_output.saturating_add(d.tokens_output));
-        e.tokens_cache_read = pin(e.tokens_cache_read.saturating_add(d.tokens_cache_read));
-        e.tokens_cache_write = pin(e.tokens_cache_write.saturating_add(d.tokens_cache_write));
-        e.requests = pin(e.requests.saturating_add(d.requests));
-        e.billable_requests = pin(e.billable_requests.saturating_add(d.billable_requests));
-        for (class, n) in &d.usage_units {
-            let cur = e.usage_units.entry(class.clone()).or_insert(0);
-            *cur = pin(cur.saturating_add(*n));
-        }
+    fn apply_metering(
+        m: &mut BTreeMap<MeteringKey, MeteringRow>,
+        d: &MeteringDelta,
+    ) -> StoreResult<()> {
+        let key = (
+            d.bucket,
+            d.key_id.clone(),
+            d.model.clone(),
+            d.provider.clone(),
+            d.priced_from_ms,
+            d.key_group_at_use.clone(),
+            d.pricing_version.clone(),
+        );
+        let mut row = m.get(&key).cloned().unwrap_or_else(|| MeteringRow {
+            scale: 6,
+            key_id: d.key_id.clone(),
+            model: d.model.clone(),
+            provider: d.provider.clone(),
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 0,
+            billable_requests: 0,
+            key_group_at_use: d.key_group_at_use.clone(),
+            pricing_version: d.pricing_version.clone(),
+            priced_from_ms: d.priced_from_ms,
+            usage_units: BTreeMap::new(),
+        });
+        row.checked_add_delta(d)
+            .map_err(|e| StoreError(e.to_string()))?;
+        m.insert(key, row);
+        Ok(())
     }
 }
 
@@ -500,6 +495,18 @@ impl Store for MemoryStore {
         self.v3_add_usage_batch(op, cells).map_err(op_error)
     }
 
+    fn add_metering_batch_deduped(
+        &self,
+        op: busbar_contract::abi::store::OpId,
+        deltas: &[MeteringDelta],
+    ) -> StoreResult<()> {
+        self.v3_add_metering_batch(op, deltas).map_err(op_error)
+    }
+
+    fn supports_metering_batch_deduped(&self) -> bool {
+        true
+    }
+
     fn supports_usage_batch_deduped(&self) -> bool {
         true
     }
@@ -517,15 +524,27 @@ impl Store for MemoryStore {
         window_start: u64,
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
+        let mut ledger = ledger.clone();
+        ledger
+            .normalize_scale6()
+            .map_err(|e| StoreError(e.to_string()))?;
+        let ledger = &ledger;
+
         Self::check_legacy_usage_bucket(bucket_id)?;
         write(&self.usage).insert((bucket_id.to_string(), window_start), ledger.clone());
         Ok(())
     }
 
     fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
+        let mut delta = delta.clone();
+        delta
+            .normalize_scale6()
+            .map_err(|e| StoreError(e.to_string()))?;
+        let delta = &delta;
+
         Self::check_legacy_usage_bucket(bucket_id)?;
         let mut usage = write(&self.usage);
-        Self::apply_usage(&mut usage, bucket_id, window_start, delta);
+        Self::apply_usage(&mut usage, bucket_id, window_start, delta)?;
 
         if sweep_due(&self.usage_sweep_ticker) {
             self.sweep_usage(&mut usage);
@@ -534,9 +553,14 @@ impl Store for MemoryStore {
     }
 
     fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        let mut d = d.clone();
+        d.normalize_scale6()
+            .map_err(|e| StoreError(e.to_string()))?;
+        let d = &d;
+
         check_metering("add_metering", d)?;
         let mut m = write(&self.metering);
-        Self::apply_metering(&mut m, d);
+        Self::apply_metering(&mut m, d)?;
         Ok(())
     }
 

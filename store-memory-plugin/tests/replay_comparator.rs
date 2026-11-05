@@ -16,6 +16,7 @@ fn delta(requests: i64, input: i64) -> UsageDelta {
         requests,
         billable_requests: requests,
         models: vec![ModelTokensDelta {
+            scale: 6,
             model: "m".to_string(),
             usage_units: [("input".to_string(), input)].into_iter().collect(),
         }],

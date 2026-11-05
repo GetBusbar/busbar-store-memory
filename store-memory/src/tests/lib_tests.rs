@@ -251,6 +251,7 @@ fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
         requests,
         billable_requests: requests,
         models: vec![busbar_contract::records::ModelTokens {
+            scale: 6,
             model: model.to_string(),
             usage_units: [
                 (busbar_contract::records::UNIT_INPUT, input),
@@ -290,6 +291,7 @@ fn add_usage_accumulates_per_model() {
         requests: 1,
         billable_requests: 1,
         models: vec![busbar_contract::records::ModelTokensDelta {
+            scale: 6,
             model: "gpt-5".to_string(),
             usage_units: std::collections::BTreeMap::from([
                 (busbar_contract::records::UNIT_INPUT.to_string(), 10i64),
@@ -464,6 +466,7 @@ fn next_revision_is_strictly_monotonic_starting_above_zero() {
 fn metering_accumulates_per_bucket() {
     let s = MemoryStore::new();
     let d = MeteringDelta {
+        scale: 6,
         usage_units: Default::default(),
         key_id: "a".to_string(),
         bucket: 7,
@@ -602,6 +605,7 @@ fn add_metering_retains_buckets_at_the_usage_retention_boundary() {
     let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
     let one_inside = at_ceiling + 1;
     let base = MeteringDelta {
+        scale: 6,
         usage_units: Default::default(),
         key_id: "k".to_string(),
         bucket: at_ceiling,
@@ -618,6 +622,7 @@ fn add_metering_retains_buckets_at_the_usage_retention_boundary() {
         priced_from_ms: 0,
     };
     let inside = MeteringDelta {
+        scale: 6,
         bucket: one_inside,
         ..base.clone()
     };
@@ -1429,6 +1434,7 @@ fn the_denylist_round_trips_and_lists_an_id_once() {
 fn metering_rows_split_on_priced_from_and_provider_and_sum_units() {
     let s = MemoryStore::new();
     let base = MeteringDelta {
+        scale: 6,
         key_id: "k".to_string(),
         bucket: 9,
         model: "m".to_string(),
@@ -1746,81 +1752,57 @@ fn purging_tasks_takes_their_event_chains() {
     assert_eq!(events_of(&s, "t"), 0);
 }
 
-/// Raw usage retains its full unsigned range; legacy metering keeps its signed-column ceiling.
+/// Requests retain the unsigned domain; quantities refuse unrepresentable aggregates.
 #[test]
-fn usage_keeps_unsigned_range_and_metering_retains_signed_column_limits() {
-    const MAX_METERING_COUNTER: u64 = i64::MAX as u64;
-    const MAX_USAGE_COUNTER: u64 = u64::MAX;
+fn usage_requests_keep_unsigned_range_and_quantity_overflow_refuses() {
     let s = MemoryStore::new();
-
-    s.put_usage(
-        "a",
-        0,
-        &ledger(MAX_USAGE_COUNTER, "m", MAX_USAGE_COUNTER, 7),
-    )
-    .unwrap();
-    let u = s.get_usage("a", 0).unwrap();
+    let max = i64::MAX as u64;
+    s.put_usage("a", 0, &ledger(u64::MAX, "m", max, 7)).unwrap();
+    let before = s.get_usage("a", 0).unwrap();
     assert_eq!(
-        (u.requests, u.billable_requests),
-        (MAX_USAGE_COUNTER, MAX_USAGE_COUNTER)
+        (before.requests, before.billable_requests),
+        (u64::MAX, u64::MAX)
     );
-    assert_eq!((u.total_input(), u.total_output()), (MAX_USAGE_COUNTER, 7));
-
-    s.put_usage(
-        "b",
-        0,
-        &ledger(MAX_METERING_COUNTER - 1, "m", MAX_METERING_COUNTER - 1, 0),
-    )
-    .unwrap();
-    let d = UsageDelta {
-        requests: 5,
-        billable_requests: 5,
+    assert_eq!((before.total_input(), before.total_output()), (max, 7));
+    assert!(s.put_usage("a", 0, &ledger(0, "m", u64::MAX, 0)).is_err());
+    let delta = UsageDelta {
+        requests: 1,
+        billable_requests: 1,
         models: vec![busbar_contract::records::ModelTokensDelta {
-            model: "m".to_string(),
-            usage_units: [(busbar_contract::records::UNIT_INPUT.to_string(), 5i64)]
+            scale: 6,
+            model: "m".into(),
+            usage_units: [(busbar_contract::records::UNIT_INPUT.into(), 1)]
                 .into_iter()
                 .collect(),
         }],
     };
-    s.add_usage("b", 0, &d).unwrap();
-    let u = s.get_usage("b", 0).unwrap();
-    assert_eq!(
-        (u.requests, u.billable_requests, u.total_input()),
-        (
-            MAX_METERING_COUNTER + 4,
-            MAX_METERING_COUNTER + 4,
-            MAX_METERING_COUNTER + 4
-        )
-    );
-
+    assert!(s.add_usage("a", 0, &delta).is_err());
+    assert_eq!(s.get_usage("a", 0).unwrap(), before);
     let m = MeteringDelta {
-        usage_units: [("open".to_string(), u64::MAX)].into_iter().collect(),
-        key_id: "a".to_string(),
+        scale: 6,
+        key_id: "a".into(),
         bucket: 7,
-        model: "m".to_string(),
-        provider: "p".to_string(),
-        tokens_input: u64::MAX,
-        tokens_output: MAX_METERING_COUNTER,
-        tokens_cache_read: 1,
+        model: "m".into(),
+        provider: "p".into(),
+        tokens_input: max,
+        tokens_output: 0,
+        tokens_cache_read: 0,
         tokens_cache_write: 0,
         requests: u64::MAX,
-        billable_requests: MAX_METERING_COUNTER,
+        billable_requests: u64::MAX,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
         priced_from_ms: 0,
+        usage_units: [("open".into(), max)].into_iter().collect(),
     };
     s.add_metering(&m).unwrap();
-    s.add_metering(&m).unwrap();
-    let r = &s.list_metering(7).unwrap()[0];
+    let before = s.list_metering(7).unwrap();
+    assert!(s.add_metering(&m).is_err());
+    assert_eq!(s.list_metering(7).unwrap(), before);
     assert_eq!(
-        (r.tokens_input, r.tokens_output, r.tokens_cache_read),
-        (MAX_METERING_COUNTER, MAX_METERING_COUNTER, 2)
+        (before[0].requests, before[0].billable_requests),
+        (u64::MAX, u64::MAX)
     );
-    assert_eq!(
-        (r.requests, r.billable_requests),
-        (MAX_METERING_COUNTER, MAX_METERING_COUNTER)
-    );
-    assert_eq!(r.usage_units["open"], MAX_METERING_COUNTER);
 }
 
 /// Listings are deterministic: keys by `(created_at, id)`, a key's credentials by `(kind, slot)`, keys since a revision by revision.
@@ -2327,3 +2309,6 @@ fn discarded_credentials_are_wiped_and_other_owners_survive() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows["kept"].secret, "v1:plain:sek");
 }
+
+#[path = "exact_counts.rs"]
+mod exact_counts;

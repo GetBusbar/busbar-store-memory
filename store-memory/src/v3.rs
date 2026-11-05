@@ -33,8 +33,13 @@ const MAX_INFLIGHT: u32 = 1024;
 busbar_contract::statement_extensions!(EXTENSIONS: [
     (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1"),
     (conditional::CAPABILITY, b"1"),
+    ("busbar.store.count-scale", b"6"),
     (correction::CAPABILITY, correction::CAPABILITY_VALUE)
 ]);
+
+/// The settings accepted by this plugin's lifecycle parser.
+const SETTINGS_SCHEMA: busbar_contract::abi::mechanism::call::Blob =
+    busbar_contract::abi::mechanism::call::Blob::json(include_bytes!("settings.schema.json"));
 
 busbar_contract::store_door!(
     MemoryStore,
@@ -42,7 +47,8 @@ busbar_contract::store_door!(
     env!("CARGO_PKG_VERSION"),
     MAX_INFLIGHT,
     extensions: EXTENSIONS,
-    secret_refs: SECRET_REFS
+    secret_refs: SECRET_REFS,
+    settings_schema: SETTINGS_SCHEMA
 );
 
 #[derive(Default)]
@@ -168,6 +174,22 @@ impl MemoryStore {
             .validate()
             .map_err(|reason| OpRefused::Refused(reason.into()))?;
         let dedupe = Dedupe::usage_correction(request);
+        let mut normalized_request = request.clone();
+        for row in &mut normalized_request.metering {
+            row.normalize_scale6()
+                .map_err(|e| OpRefused::Refused(e.to_string()))?;
+        }
+        for change in &mut normalized_request.usage {
+            change
+                .expected
+                .normalize_scale6()
+                .map_err(|e| OpRefused::Refused(e.to_string()))?;
+            change
+                .replacement
+                .normalize_scale6()
+                .map_err(|e| OpRefused::Refused(e.to_string()))?;
+        }
+        let request = &normalized_request;
         let mut inner = self.v3.lock();
         match dedupe.seen(inner.ops.get(&request.op_id).map(|body| body.as_slice())) {
             Seen::Replay => return Ok(correction::Decision::Applied),
@@ -428,10 +450,27 @@ impl MemoryStore {
         for (bucket, _, _) in cells {
             Self::check_legacy_usage_bucket(bucket).map_err(refused)?;
         }
+        let mut normalized = cells.to_vec();
+        for (_, _, delta) in &mut normalized {
+            delta
+                .normalize_scale6()
+                .map_err(|e| OpRefused::Refused(e.to_string()))?;
+        }
+        let cells = &normalized;
         let mut usage = write(&self.usage);
-        let mut sweep = false;
+        let mut staged = std::collections::HashMap::new();
+        for (bucket, window, _) in cells {
+            let key = (bucket.to_string(), *window);
+            if let Some(row) = usage.get(&key) {
+                staged.insert(key, row.clone());
+            }
+        }
         for (bucket, window, delta) in cells {
-            Self::apply_usage(&mut usage, bucket, *window, delta);
+            Self::apply_usage(&mut staged, bucket, *window, delta).map_err(refused)?;
+        }
+        let mut sweep = false;
+        for (key, row) in staged {
+            usage.insert(key, row);
             sweep |= crate::sweep_due(&self.usage_sweep_ticker);
             (self.v3.probe)(self, Stage::BatchItem);
         }
@@ -456,10 +495,36 @@ impl MemoryStore {
             .iter()
             .try_for_each(|d| crate::check_metering("add_metering_batch", d))
             .map_err(refused)?;
-        self.deduped(op, Dedupe::metering(deltas), |s| {
+        let dedupe = Dedupe::metering(deltas);
+        let mut normalized = deltas.to_vec();
+        for delta in &mut normalized {
+            delta
+                .normalize_scale6()
+                .map_err(|e| OpRefused::Refused(e.to_string()))?;
+        }
+        let deltas = &normalized;
+        self.deduped(op, dedupe, |s| {
             let mut metering = write(&s.metering);
+            let mut staged = std::collections::BTreeMap::new();
             for d in deltas {
-                Self::apply_metering(&mut metering, d);
+                let key = (
+                    d.bucket,
+                    d.key_id.clone(),
+                    d.model.clone(),
+                    d.provider.clone(),
+                    d.priced_from_ms,
+                    d.key_group_at_use.clone(),
+                    d.pricing_version.clone(),
+                );
+                if let Some(row) = metering.get(&key) {
+                    staged.insert(key, row.clone());
+                }
+            }
+            for d in deltas {
+                Self::apply_metering(&mut staged, d)?;
+            }
+            for (key, row) in staged {
+                metering.insert(key, row);
                 (s.v3.probe)(s, Stage::BatchItem);
             }
             Ok(())
@@ -538,3 +603,7 @@ impl StoreSlots for MemoryStore {
 #[cfg(test)]
 #[path = "tests/usage_correction_tests.rs"]
 mod usage_correction_tests;
+
+#[cfg(test)]
+#[path = "settings_schema_tests.rs"]
+mod settings_schema_tests;

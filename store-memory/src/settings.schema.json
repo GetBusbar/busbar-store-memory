@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": [
+    "object",
+    "null"
+  ],
+  "additionalProperties": false,
+  "default": {},
+  "properties": {
+    "token": {
+      "writeOnly": true,
+      "description": "Accepted and ignored for compatibility, with any JSON value. Secret references may be supplied here. This describes lifecycle parsing; the host validates secret-reference syntax and resolves material separately.",
+      "x-busbar-secret": true
+    }
+  }
+}

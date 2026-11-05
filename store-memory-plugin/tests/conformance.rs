@@ -142,6 +142,7 @@ fn exercise(dropped: bool) -> BTreeMap<&'static str, String> {
             requests,
             billable_requests: requests,
             models: vec![ModelTokensDelta {
+                scale: 6,
                 model: "m".to_string(),
                 usage_units: [("input".to_string(), input)].into_iter().collect(),
             }],
@@ -150,6 +151,7 @@ fn exercise(dropped: bool) -> BTreeMap<&'static str, String> {
 
     fn meter(key_id: &str, provider: &str, input: u64) -> MeteringDelta {
         MeteringDelta {
+            scale: 6,
             key_id: key_id.into(),
             bucket: 86_400,
             model: "m".into(),

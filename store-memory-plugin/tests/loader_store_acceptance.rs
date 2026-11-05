@@ -36,6 +36,7 @@ fn delta(requests: i64, input: i64) -> UsageDelta {
         requests,
         billable_requests: requests,
         models: vec![ModelTokensDelta {
+            scale: 6,
             model: "m".to_string(),
             usage_units: [("input".to_string(), input)].into_iter().collect(),
         }],
@@ -61,6 +62,7 @@ fn the_memory_store_states_its_facts_in_its_tail() {
         assert_eq!(
             s.facts(),
             StoreFacts {
+                exact_counts: true,
                 ephemeral: true,
                 durable_plane: false,
                 fork_refusal: true,
@@ -244,6 +246,7 @@ fn a_metering_batch_applies_through_the_typed_surface() {
     for dropped in [false, true] {
         let s = support::open(dropped);
         let m = busbar_contract::records::MeteringDelta {
+            scale: 6,
             key_id: "k".into(),
             bucket: 86_400,
             model: "m".into(),
