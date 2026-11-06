@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Retention ceiling for usage windows: 31 days, matching the governance rate cells.
 const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 
-/// One `retain()` sweep per this many `add_usage` cells or token redemptions.
+/// One retention sweep per this many `add_usage` cells (batch cells included) or token redemptions.
 const SWEEP_INTERVAL: u64 = 256;
 
 /// The `records` map: `(schema, key) -> body`, in KEY ORDER because `record_scan` promises a
@@ -35,12 +35,30 @@ type RecordMap = BTreeMap<(String, Vec<u8>), RecordBytes>;
 /// leads so a day's rows are one ordered range.
 type MeteringKey = (u64, String, String, String, u64, String, String);
 
+/// The [`MeteringKey`] a delta's counts accrue under.
+fn metering_key(d: &MeteringDelta) -> MeteringKey {
+    (
+        d.bucket,
+        d.key_id.clone(),
+        d.model.clone(),
+        d.provider.clone(),
+        d.priced_from_ms,
+        d.key_group_at_use.clone(),
+        d.pricing_version.clone(),
+    )
+}
+
 /// A plane record's key: `(kind, identity, seq)`.
 type PlaneKey = (String, String, u64);
 
 /// The plane kind whose rows own a chain of [`TASK_EVENT_KIND`] rows (parent = the task id).
 const TASK_KIND: &str = "task";
+
+/// A task's event chain: deleted or purged with its task.
 const TASK_EVENT_KIND: &str = "task_event";
+
+/// The highest credential slot: two slots per `(key_id, kind)` allow overlap-window rotation.
+const MAX_CREDENTIAL_SLOT: u8 = 1;
 
 /// Reserved host ticket records carry their absolute expiry in `ts`.
 const TICKET_RECORD_KIND: &str = "ticket";
@@ -257,7 +275,8 @@ impl MemoryStore {
         }
     }
 
-    /// Clock for revocation, deletion, dedupe receipts and retention (0 before the Unix epoch).
+    /// Clock for revocation, deletion and usage retention (0 before the Unix epoch); dedupe
+    /// receipts age by elapsed process time instead (`receipt_now`).
     fn now(&self) -> u64 {
         self.clock_secs().unwrap_or(0)
     }
@@ -299,6 +318,13 @@ impl MemoryStore {
                 return Ok(true);
             }
             return Err(slot_occupied(op, &stored.meta));
+        }
+
+        if meta.slot > MAX_CREDENTIAL_SLOT {
+            return Err(StoreError(format!(
+                "{op}: credential '{}' names slot {}; a slot is 0 or 1",
+                meta.id, meta.slot
+            )));
         }
 
         let occupied = creds.values().any(|c| {
@@ -354,8 +380,15 @@ impl MemoryStore {
         window_start: u64,
         delta: &UsageDelta,
     ) -> StoreResult<()> {
+        // `checked_apply_delta` is atomic: a refused delta leaves the stored row untouched, and a
+        // refused first delta creates no row.
         let key = (bucket_id.to_string(), window_start);
-        let mut ledger = usage.get(&key).cloned().unwrap_or_default();
+        if let Some(ledger) = usage.get_mut(&key) {
+            return ledger
+                .checked_apply_delta(delta)
+                .map_err(|e| StoreError(e.to_string()));
+        }
+        let mut ledger = UsageLedger::default();
         ledger
             .checked_apply_delta(delta)
             .map_err(|e| StoreError(e.to_string()))?;
@@ -384,17 +417,16 @@ impl MemoryStore {
         m: &mut BTreeMap<MeteringKey, MeteringRow>,
         d: &MeteringDelta,
     ) -> StoreResult<()> {
-        let key = (
-            d.bucket,
-            d.key_id.clone(),
-            d.model.clone(),
-            d.provider.clone(),
-            d.priced_from_ms,
-            d.key_group_at_use.clone(),
-            d.pricing_version.clone(),
-        );
-        let mut row = m.get(&key).cloned().unwrap_or_else(|| MeteringRow {
-            scale: 6,
+        let key = metering_key(d);
+        // `checked_add_delta` is atomic: a refused delta leaves the stored row untouched, and a
+        // refused first delta creates no row.
+        if let Some(row) = m.get_mut(&key) {
+            return row
+                .checked_add_delta(d)
+                .map_err(|e| StoreError(e.to_string()));
+        }
+        let mut row = MeteringRow {
+            scale: busbar_contract::COUNT_SCALE,
             key_id: d.key_id.clone(),
             model: d.model.clone(),
             provider: d.provider.clone(),
@@ -408,7 +440,7 @@ impl MemoryStore {
             pricing_version: d.pricing_version.clone(),
             priced_from_ms: d.priced_from_ms,
             usage_units: BTreeMap::new(),
-        });
+        };
         row.checked_add_delta(d)
             .map_err(|e| StoreError(e.to_string()))?;
         m.insert(key, row);
@@ -793,14 +825,13 @@ impl Store for MemoryStore {
     }
 
     fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
-        let mut parents: Vec<String> = read(&self.plane_records)
+        let records = read(&self.plane_records);
+        let parents: BTreeSet<&str> = records
             .range((kind.to_owned(), String::new(), 0)..)
             .take_while(|((k, _, _), _)| k == kind)
-            .filter_map(|(_, r)| r.parent.clone())
+            .filter_map(|(_, r)| r.parent.as_deref())
             .collect();
-        parents.sort();
-        parents.dedup();
-        Ok(parents)
+        Ok(parents.into_iter().map(str::to_owned).collect())
     }
 
     /// `task` drops only TERMINAL rows (an interrupted task waiting on a human sits still longest),

@@ -705,7 +705,8 @@ fn reserved_legacy_writes_refuse_whole_batches_but_an_applied_legacy_receipt_rep
 
     store
         .deduped(op(2), Dedupe::usage(&cells), |s| {
-            MemoryStore::apply_usage(&mut write(&s.usage), cells[0].0, cells[0].1, &cells[0].2)?;
+            MemoryStore::apply_usage(&mut write(&s.usage), cells[0].0, cells[0].1, &cells[0].2)
+                .map_err(|e| OpRefused::Failed(e.0))?;
             Ok(())
         })
         .unwrap();
@@ -734,9 +735,17 @@ fn an_invalid_stored_ledger_is_a_refusal_without_effects() {
 
 #[test]
 fn receipt_clock_uses_elapsed_process_time() {
-    let store = MemoryStore::new();
+    let mut store = MemoryStore::new();
+    // Start the process clock 5s in the past so elapsed time is distinguishable from zero.
+    store.v3.started = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(5))
+        .expect("the monotonic clock is at least 5s past its origin");
     let before = store.v3.started.elapsed().as_secs();
     let receipt_time = store.receipt_now();
     let after = store.v3.started.elapsed().as_secs();
     assert!((before..=after).contains(&receipt_time));
+    assert!(
+        receipt_time >= 5,
+        "the unpinned receipt clock is elapsed process time"
+    );
 }

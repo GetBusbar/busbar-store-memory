@@ -4,7 +4,7 @@
 //! The store v3 slots this backend answers beyond the 1.5.5 op set ([`StoreSlots`]): the
 //! `op_id`-carrying count batches, plane records and the kernel-held records.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 use busbar_contract::abi::sdk::conn::Host;
@@ -135,13 +135,13 @@ impl MemoryStore {
         &self,
         op: OpId,
         d: Dedupe,
-        apply: impl FnOnce(&Self) -> RecordStoreResult<()>,
+        apply: impl FnOnce(&Self) -> OpResult<()>,
     ) -> OpResult<()> {
         d.run(
             &mut *self.v3.lock(),
             |i| Ok(i.ops.get(&op).copied()),
             |i, body| {
-                apply(self).map_err(failed)?;
+                apply(self)?;
                 i.record(self.receipt_now(), op, *body);
                 Ok(())
             },
@@ -268,7 +268,7 @@ impl MemoryStore {
     ) -> OpResult<()> {
         crate::check_plane("append_plane_record", record).map_err(refused)?;
         self.deduped(op, Dedupe::append(record), |s| {
-            s.append_plane_record(record)
+            s.append_plane_record(record).map_err(failed)
         })
     }
 
@@ -393,12 +393,9 @@ impl MemoryStore {
         value: &[u8],
     ) -> Result<(), String> {
         use busbar_contract::bounded::MAX_RECORD_BYTES;
-        let over_limit =
-            |n| format!("record_put: value is {n} bytes, over the {MAX_RECORD_BYTES}-byte limit");
-        if value.len() > MAX_RECORD_BYTES {
-            return Err(over_limit(value.len()));
-        }
-        let value = RecordBytes::new(value.to_vec()).map_err(over_limit)?;
+        let value = RecordBytes::new(value.to_vec()).map_err(|n| {
+            format!("record_put: value is {n} bytes, over the {MAX_RECORD_BYTES}-byte limit")
+        })?;
         let mut records = write(&self.records);
         let at = (schema.to_string(), key.to_vec());
         if value.as_slice().is_empty() {
@@ -458,7 +455,7 @@ impl MemoryStore {
         }
         let cells = &normalized;
         let mut usage = write(&self.usage);
-        let mut staged = std::collections::HashMap::new();
+        let mut staged = HashMap::new();
         for (bucket, window, _) in cells {
             let key = (bucket.to_string(), *window);
             if let Some(row) = usage.get(&key) {
@@ -468,10 +465,13 @@ impl MemoryStore {
         for (bucket, window, delta) in cells {
             Self::apply_usage(&mut staged, bucket, *window, delta).map_err(refused)?;
         }
+        // The sweep cadence counts every submitted cell, as `add_usage` does, not coalesced rows.
         let mut sweep = false;
+        for _ in cells {
+            sweep |= crate::sweep_due(&self.usage_sweep_ticker);
+        }
         for (key, row) in staged {
             usage.insert(key, row);
-            sweep |= crate::sweep_due(&self.usage_sweep_ticker);
             (self.v3.probe)(self, Stage::BatchItem);
         }
 
@@ -505,23 +505,16 @@ impl MemoryStore {
         let deltas = &normalized;
         self.deduped(op, dedupe, |s| {
             let mut metering = write(&s.metering);
-            let mut staged = std::collections::BTreeMap::new();
+            let mut staged = BTreeMap::new();
             for d in deltas {
-                let key = (
-                    d.bucket,
-                    d.key_id.clone(),
-                    d.model.clone(),
-                    d.provider.clone(),
-                    d.priced_from_ms,
-                    d.key_group_at_use.clone(),
-                    d.pricing_version.clone(),
-                );
+                let key = crate::metering_key(d);
                 if let Some(row) = metering.get(&key) {
                     staged.insert(key, row.clone());
                 }
             }
+            // An overflow is decided before anything is published: Refused, as for usage.
             for d in deltas {
-                Self::apply_metering(&mut staged, d)?;
+                Self::apply_metering(&mut staged, d).map_err(refused)?;
             }
             for (key, row) in staged {
                 metering.insert(key, row);
@@ -610,5 +603,5 @@ impl StoreSlots for MemoryStore {
 mod usage_correction_tests;
 
 #[cfg(test)]
-#[path = "settings_schema_tests.rs"]
+#[path = "tests/settings_schema_tests.rs"]
 mod settings_schema_tests;

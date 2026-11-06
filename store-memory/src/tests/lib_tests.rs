@@ -283,7 +283,7 @@ fn key_crud_and_ledger_roundtrip() {
     assert_eq!(s.get_usage("a", 999).unwrap(), UsageLedger::default());
 }
 
-/// Additive per-model delta accumulate: two adds sum, a second model materializes its own row, and negative deltas floor at 0 (parity contract with sqlite/postgres/valkey).
+/// Additive per-model delta accumulate: two adds sum, and a negative request delta floors at 0 (parity contract with sqlite/postgres/valkey).
 #[test]
 fn add_usage_accumulates_per_model() {
     let s = MemoryStore::new();
@@ -923,7 +923,7 @@ fn a_losing_redemption_leaves_the_winners_expiry() {
     s.pin_clock(101);
     assert!(
         s.redeem_plane_token("ask", "n3", 6_000, 101).unwrap(),
-        "a lapsed claim stays blocked by a loser's expiry"
+        "a lapsed claim must be vacant again, not blocked by a loser's expiry"
     );
 }
 
@@ -1043,7 +1043,7 @@ fn record_put_rewrite_replaces_the_row() {
     );
 }
 
-/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `upsert_key`
+/// An upsert-kind plane record (`task`): `parent` is `None` and `seq` is `0`, so `upsert_key` stores it at `(task, id, 0)`.
 fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
     PlaneRecord {
         kind: "task".to_string(),
@@ -1323,12 +1323,12 @@ fn an_upsert_ignores_the_records_seq() {
     );
 }
 
-/// Equal-`seq` rows list in one stable order (by id), whatever the map's iteration order is.
+/// Equal-`seq` rows list in one stable order (by id), whatever order they were written in.
 #[test]
 fn list_plane_records_orders_equal_seqs_by_id() {
     let ids: Vec<String> = (0..16).map(|i| format!("id-{i:02}")).collect();
     let expected: Vec<Vec<u8>> = ids.iter().map(|i| i.as_bytes().to_vec()).collect();
-    for _ in 0..4 {
+    {
         let s = MemoryStore::new();
         for id in ids.iter().rev() {
             let r = PlaneRecord {
@@ -1836,7 +1836,7 @@ fn listings_come_back_in_a_deterministic_order() {
         .collect();
     assert_eq!(since, ids, "list_keys_since is not in revision order");
 
-    for (n, (kind, slot)) in [("b", 2u8), ("a", 5), ("b", 0), ("a", 1), ("c", 0)]
+    for (n, (kind, slot)) in [("b", 1u8), ("a", 1), ("b", 0), ("a", 0), ("c", 0)]
         .into_iter()
         .enumerate()
     {
@@ -1851,7 +1851,7 @@ fn listings_come_back_in_a_deterministic_order() {
         .into_iter()
         .map(|c| (c.kind, c.slot))
         .collect();
-    let want: Vec<(String, u8)> = [("a", 1), ("a", 5), ("b", 0), ("b", 2), ("c", 0)]
+    let want: Vec<(String, u8)> = [("a", 0), ("a", 1), ("b", 0), ("b", 1), ("c", 0)]
         .into_iter()
         .map(|(k, s)| (k.to_string(), s))
         .collect();
@@ -1868,8 +1868,9 @@ fn redemption_keeps_full_width_expiries_and_never_reopens_a_permanent_node_claim
             .redeem_plane_token("busbar.mint.v1", &token, expiry, 0)
             .unwrap());
         store.pin_clock(expiry);
+        // A still-live deadline reaches the spent-claim row rather than the expired-input exit.
         assert!(!store
-            .redeem_plane_token("busbar.mint.v1", &token, 1, expiry)
+            .redeem_plane_token("busbar.mint.v1", &token, u64::MAX, expiry)
             .unwrap());
         assert_eq!(
             *store
@@ -2170,6 +2171,11 @@ fn a_fresh_claim_is_valid_at_the_store_deadline_second() {
     assert!(!store
         .redeem_plane_token("clock-equality", "fresh", DEADLINE, DEADLINE - 1)
         .unwrap());
+    // A fresh token one second past the store's deadline is refused even when the caller's own
+    // `now` says it is still early: the store's clock decides, not the caller's.
+    assert!(!store
+        .redeem_plane_token("clock-equality", "late", DEADLINE - 1, DEADLINE - 2)
+        .unwrap());
 }
 
 #[test]
@@ -2312,3 +2318,86 @@ fn discarded_credentials_are_wiped_and_other_owners_survive() {
 
 #[path = "exact_counts.rs"]
 mod exact_counts;
+
+/// Rows of one kind list oldest-first by `seq` across identities, not in key (identity) order.
+#[test]
+fn list_plane_records_orders_by_seq_across_identities() {
+    let s = MemoryStore::new();
+    for (parent, seq, body) in [
+        ("a", 2, "a2"),
+        ("b", 1, "b1"),
+        ("a", 3, "a3"),
+        ("b", 4, "b4"),
+    ] {
+        s.append_plane_record(
+            PlaneRecord {
+                kind: "chain".to_string(),
+                id: format!("{parent}{seq}"),
+                parent: Some(parent.to_string()),
+                seq,
+                ts: 0,
+                disposition: PlaneDisposition::Active,
+                body: body.as_bytes().to_vec(),
+            }
+            .view(),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        s.list_plane_records("chain", &PlaneSelector::All).unwrap(),
+        [
+            b"b1".to_vec(),
+            b"a2".to_vec(),
+            b"a3".to_vec(),
+            b"b4".to_vec()
+        ]
+    );
+    assert_eq!(
+        s.list_plane_records("chain", &PlaneSelector::Parent("b".into()))
+            .unwrap(),
+        [b"b1".to_vec(), b"b4".to_vec()]
+    );
+}
+
+/// `list_audit_tail` answers the NEWEST `limit` entries in ascending `seq` order; 0 answers none
+/// and a limit past the log answers all of it.
+#[test]
+fn list_audit_tail_answers_the_newest_entries_oldest_first() {
+    let s = MemoryStore::new();
+    let entry = |seq: u64| AuditRecord {
+        seq,
+        ts: 1_700_000_000 + seq,
+        action: format!("action-{seq}"),
+        resource: "hook:tail".to_string(),
+        outcome: "applied".to_string(),
+        principal: "tail".to_string(),
+        prev_hash: String::new(),
+        hash: format!("hash-{seq}"),
+    };
+    for seq in [3, 1, 4, 2] {
+        s.append_audit(&entry(seq)).unwrap();
+    }
+    let seqs = |rows: Vec<AuditRecord>| rows.into_iter().map(|r| r.seq).collect::<Vec<_>>();
+    assert_eq!(seqs(s.list_audit().unwrap()), [1, 2, 3, 4]);
+    assert_eq!(seqs(s.list_audit_tail(2).unwrap()), [3, 4]);
+    assert_eq!(seqs(s.list_audit_tail(0).unwrap()), Vec::<u64>::new());
+    assert_eq!(seqs(s.list_audit_tail(u64::MAX).unwrap()), [1, 2, 3, 4]);
+}
+
+/// `CredentialMeta::slot` is 0 or 1 (the contract's two-row rotation bound): any other slot is
+/// refused by both mint paths and writes nothing.
+#[test]
+fn a_credential_slot_outside_zero_or_one_is_refused() {
+    let s = MemoryStore::new();
+    s.put_key(&key("k")).unwrap();
+    for slot in [2u8, u8::MAX] {
+        let mut c = credential(&format!("c{slot}"), "k", &format!("P{slot}"));
+        c.meta.slot = slot;
+        assert!(s.put_credential(&c).is_err(), "slot {slot} was stored");
+        assert!(
+            s.put_key_with_credential(&key("k"), &c).is_err(),
+            "slot {slot} was minted"
+        );
+    }
+    assert!(s.list_credentials("k").unwrap().is_empty());
+}

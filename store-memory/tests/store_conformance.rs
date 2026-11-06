@@ -544,9 +544,10 @@ mod conf {
                 .expect("append a call plane record");
         }
 
-        let _purged = store
+        let purged = store
             .purge_plane_records_before("call", cutoff)
             .expect("purge the call plane records older than the cutoff");
+        assert_eq!(purged, 1, "the sweep must report the one row it dropped");
 
         let survivors: Vec<u64> = store
             .list_plane_records("call", &PlaneSelector::Parent(parent.as_str().into()))
@@ -565,9 +566,13 @@ mod conf {
              had to go and seq 2 (ts {new_ts}) had to stay, got {survivors:?}"
         );
 
-        let _reswept = store
+        let reswept = store
             .purge_plane_records_before("call", cutoff)
             .expect("re-purge at the same cutoff");
+        assert_eq!(
+            reswept, 0,
+            "a repeated sweep at the same cutoff drops nothing"
+        );
         let resurvivors: Vec<u64> = store
             .list_plane_records("call", &PlaneSelector::Parent(parent.into()))
             .expect("list the calls for the parent again")
@@ -635,7 +640,9 @@ mod conf {
     /// **`redeem_plane_token` (kind `ask`) is a single-use test-and-set.** The FIRST redemption of a nonce is `true`, every later one is `false` — the durable ledger that makes a confirm-once tool execute once across a restart and across two nodes.
     pub fn assert_plane_token_is_single_use(store: &dyn Store, ns: &str) {
         let token = format!("{ns}_asknonce");
-        let expires_at = 2_000_000_000;
+        // The store judges expiry by its own clock, so a far-future deadline keeps this test
+        // valid whatever the date.
+        let expires_at = u64::MAX;
         let now = 1_700_000_000;
         assert!(
             store
@@ -728,9 +735,14 @@ fn plane_token_is_single_use() {
 #[test]
 fn plane_purge_honours_the_cutoff_survives_two_interleaved_runs() {
     let store = MemoryStore::new();
+    let start = std::sync::Barrier::new(2);
+    let run = |ns| {
+        start.wait();
+        conf::assert_plane_purge_honours_the_cutoff(&store, ns)
+    };
     std::thread::scope(|scope| {
-        let a = scope.spawn(|| conf::assert_plane_purge_honours_the_cutoff(&store, "confA"));
-        let b = scope.spawn(|| conf::assert_plane_purge_honours_the_cutoff(&store, "confB"));
+        let a = scope.spawn(|| run("confA"));
+        let b = scope.spawn(|| run("confB"));
         a.join().expect("run confA must not panic");
         b.join().expect("run confB must not panic");
     });
@@ -739,9 +751,14 @@ fn plane_purge_honours_the_cutoff_survives_two_interleaved_runs() {
 #[test]
 fn plane_purge_task_keeps_active_rows_survives_two_interleaved_runs() {
     let store = MemoryStore::new();
+    let start = std::sync::Barrier::new(2);
+    let run = |ns| {
+        start.wait();
+        conf::assert_plane_purge_task_keeps_active_rows(&store, ns)
+    };
     std::thread::scope(|scope| {
-        let a = scope.spawn(|| conf::assert_plane_purge_task_keeps_active_rows(&store, "confA"));
-        let b = scope.spawn(|| conf::assert_plane_purge_task_keeps_active_rows(&store, "confB"));
+        let a = scope.spawn(|| run("confA"));
+        let b = scope.spawn(|| run("confB"));
         a.join().expect("run confA must not panic");
         b.join().expect("run confB must not panic");
     });

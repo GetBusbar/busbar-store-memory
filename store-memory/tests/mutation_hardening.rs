@@ -110,14 +110,23 @@ fn list_keys_is_ordered_by_created_at_regardless_of_insertion_order() {
 
     s.put_key(&key("c", 20)).unwrap();
     s.put_key(&key("a", 30)).unwrap();
-    s.put_key(&key("b", 10)).unwrap();
-    s.put_key(&key("z", 10)).unwrap();
+    // Eight keys tie on created_at, written in reverse id order: without the id tie-break the
+    // HashMap's order would match the expected one only by a 1-in-40320 chance.
+    for id in ["z", "y", "x", "w", "m", "e", "d", "b"] {
+        s.put_key(&key(id, 10)).unwrap();
+    }
 
     let ids: Vec<String> = s.list_keys().unwrap().into_iter().map(|k| k.id).collect();
     assert_eq!(
         ids,
         vec![
             "b".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "m".to_string(),
+            "w".to_string(),
+            "x".to_string(),
+            "y".to_string(),
             "z".to_string(),
             "c".to_string(),
             "a".to_string()

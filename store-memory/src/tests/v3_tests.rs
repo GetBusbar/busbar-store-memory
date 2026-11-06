@@ -242,10 +242,11 @@ fn the_usage_sweep_runs_after_the_whole_batch() {
         "an expired row must not be recreated from only the batch's trailing cells"
     );
     assert_eq!(s.get_usage("other", 1).unwrap().requests, 0);
-    // Three deltas coalesce to two published rows, each counted once by the sweep ticker.
+    // The ticker counts every submitted cell (README: "every 256 add_usage cells (including
+    // batch cells)"), even though the three cells coalesce to two rows.
     assert_eq!(
         s.usage_sweep_ticker.load(Ordering::Relaxed),
-        SWEEP_INTERVAL + 1
+        SWEEP_INTERVAL + 2
     );
 }
 
@@ -883,4 +884,31 @@ fn linked_store_advertises_and_honors_usage_batch_dedupe() {
             .unwrap();
     }
     assert_eq!(store.get_usage("k", 60).unwrap().requests, 1);
+}
+
+/// A metering batch whose delta overflows a stored counter is decided before commit, so it answers
+/// `Refused` (the host may split or re-send it), matching the usage batch; nothing is applied and
+/// the op_id is not remembered.
+#[test]
+fn a_metering_batch_counter_overflow_is_refused_and_unrecorded() {
+    let store = MemoryStore::new();
+    let mut huge = metering(1);
+    huge.tokens_input = i128::MAX;
+    store.add_metering(&huge).unwrap();
+    let before = store.list_metering(huge.bucket).unwrap();
+    let healthy = MeteringDelta {
+        model: "other".into(),
+        ..metering(1)
+    };
+    let mut overflow = metering(1);
+    overflow.tokens_input = 1;
+    assert!(matches!(
+        store.v3_add_metering_batch(op(106), &[healthy.clone(), overflow]),
+        Err(OpRefused::Refused(_))
+    ));
+    assert!(store.list_metering(huge.bucket).unwrap() == before);
+    store
+        .v3_add_metering_batch(op(106), std::slice::from_ref(&healthy))
+        .expect("the refused op_id was never recorded, so a corrected batch applies under it");
+    assert_eq!(store.list_metering(huge.bucket).unwrap().len(), 2);
 }
