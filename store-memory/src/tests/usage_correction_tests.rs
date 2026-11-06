@@ -749,3 +749,44 @@ fn receipt_clock_uses_elapsed_process_time() {
         "the unpinned receipt clock is elapsed process time"
     );
 }
+
+#[test]
+fn legacy_correction_normalizes_counts_but_retains_original_receipt_identity() {
+    let store = store();
+    let mut whole = ledger_parts(7, 2);
+    whole.models[0].scale = 0;
+    store.put_usage("plain", 0, &whole).unwrap();
+    let mut replacement = ledger_parts(5, 1);
+    replacement.models[0].scale = 0;
+    let candidate = request(1, vec![change("plain", whole, replacement)]);
+    let original = candidate.clone();
+    assert_eq!(correct(&store, &candidate), Ok(Decision::Applied));
+    assert_eq!(candidate, original);
+    assert_eq!(
+        store.get_usage("plain", 0).unwrap(),
+        ledger_parts(5, 1_000_000)
+    );
+    assert_eq!(correct(&store, &candidate), Ok(Decision::Applied));
+
+    // The same values at another scale are a different immutable request under the same id.
+    let normalized = correction::normalized(&candidate).unwrap();
+    assert_eq!(correct(&store, &normalized), Err(OpRefused::Conflict));
+    let mut overflow = request(
+        2,
+        vec![change(
+            "plain",
+            ledger_parts(5, 1_000_000),
+            ledger_parts(5, i128::MAX),
+        )],
+    );
+    overflow.usage[0].replacement.models[0].scale = 0;
+    assert!(matches!(
+        correct(&store, &overflow),
+        Err(OpRefused::Refused(_))
+    ));
+    assert_eq!(
+        store.get_usage("plain", 0).unwrap(),
+        ledger_parts(5, 1_000_000)
+    );
+    assert_eq!(receipts(&store), std::mem::size_of::<Body>());
+}
