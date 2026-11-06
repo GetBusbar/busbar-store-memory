@@ -68,7 +68,8 @@ fn the_memory_store_states_its_facts_in_its_tail() {
                 fork_refusal: true,
                 record_transaction: true,
                 usage_correction: true,
-                secret_refs: vec!["token".to_string()],
+                // Memory accepts no settings, so it declares no configuration secret paths.
+                secret_refs: vec![],
                 credential_rewrap: true,
             }
         );
