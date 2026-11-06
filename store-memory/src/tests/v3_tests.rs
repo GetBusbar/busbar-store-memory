@@ -114,18 +114,24 @@ fn readers_never_observe_part_of_a_usage_batch() {
     let seen = concurrent_batch_reads(
         store.clone(),
         |store| store.usage.try_read().is_ok(),
-        |store| store.get_usage("k", 0).unwrap().requests,
+        |store| {
+            store.get_usage("k", 0).unwrap().requests
+                + store.get_usage("other", 0).unwrap().requests
+        },
         |store| match busbar_contract::abi::sdk::store::StoreSlots::add_usage_batch(
             store,
             &mut Op::detached(),
             op(101),
-            &[("k", 0, delta(3, 0)), ("k", 0, delta(4, 0))],
+            // Staging coalesces repeated keys. Use two rows to exercise the lock between
+            // separate publications, rather than observing a single coalesced row twice.
+            &[("k", 0, delta(3, 0)), ("other", 0, delta(4, 0))],
         ) {
             Step::Ready(result) => result.expect("apply usage batch"),
             Step::Pending { .. } => panic!("memory must complete inline"),
         },
     );
-    assert_eq!(store.get_usage("k", 0).unwrap().requests, 7);
+    assert_eq!(store.get_usage("k", 0).unwrap().requests, 3);
+    assert_eq!(store.get_usage("other", 0).unwrap().requests, 4);
     assert_eq!(seen, vec![7, 7], "readers saw partial usage batches");
 }
 
@@ -221,7 +227,11 @@ fn the_usage_sweep_runs_after_the_whole_batch() {
         &s,
         &mut Op::detached(),
         op(104),
-        &[("k", 1, delta(3, 0)), ("k", 1, delta(4, 0))],
+        &[
+            ("k", 1, delta(3, 0)),
+            ("other", 1, delta(5, 0)),
+            ("k", 1, delta(4, 0)),
+        ],
     ) {
         Step::Ready(result) => result.expect("apply usage batch"),
         Step::Pending { .. } => panic!("memory must complete inline"),
@@ -231,6 +241,8 @@ fn the_usage_sweep_runs_after_the_whole_batch() {
         0,
         "an expired row must not be recreated from only the batch's trailing cells"
     );
+    assert_eq!(s.get_usage("other", 1).unwrap().requests, 0);
+    // Three deltas coalesce to two published rows, each counted once by the sweep ticker.
     assert_eq!(
         s.usage_sweep_ticker.load(Ordering::Relaxed),
         SWEEP_INTERVAL + 1
