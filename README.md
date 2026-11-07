@@ -13,29 +13,31 @@ First-party signed kind:store plugin cdylib: the in-memory store, packaged as a 
 
 `busbar-store-memory` is a `kind: store` busbar plugin.
 
-Everything it holds is in RAM and lost on restart. RAM grows with keys and tombstones,
-credentials and revoked metadata, denylist entries, audit, billing metering, plane records,
-and kernel-held records. Those rows have no automatic age sweep; the host explicitly removes
-plane and kernel-held records. Long-lived deployments use a durable store.
+Everything it holds is in RAM and lost on restart. The plugin implements coherent reads,
+ordered generation-checked pages, atomic conditional commits and an authoritative clock.
+Values remain opaque and keep wiping ownership. Core owns credentials, accounting, claims,
+collection relationships and retention; this backend does not interpret their schemas.
 
-Usage retention runs after every 256 `add_usage` cells (including batch cells), removing nonzero
-windows at least 31 days old. `put_usage` and reads do not trigger that sweep; an idle store can
-retain older windows until another sweep or the host's explicit usage-purge request. Window `0`
-is the all-time ledger and remains retained. Billing rows remain for this store's life;
-operators own billing-history retention. Expired token claims are swept every 256 redemptions;
-applied-op receipts are swept when another new operation is applied, after their 24-hour
-retention. Idle stores can retain expired entries until that activity resumes.
+Each open creates fresh nonzero dataset, atomic-domain and clock identities. Receipt replay,
+execution fencing and namespace generations are part of the native primitive contract.
+Pre-open inspection uses the same exclusive state lock as native operations. A fresh process
+starts empty; this backend has no durable historical generation to recover after process exit.
+An existing nonempty state without valid current dataset control is refused, never reported empty.
+No retained legacy generation is exposed by this implementation; native generation-upgrade
+operations return `MissingCapability`. Prepared opening rechecks the original state and exact
+opaque admission marker under the same lock.
 
 ## Config
 
-Configured under the `memory` module name.
+Configured under `memory` or its canonical name `busbar-store-memory`.
 
-The store takes no settings or secret references: an empty value, `null` and `{}` all mean none,
-and every setting key is refused (``unknown setting `k` (accepted: none)``).
-When upgrading older configuration, `busbar --migrate-config` calls this plugin's one-shot
-migration to remove the formerly ignored `store.settings.token` before secret resolution.
-This applies to both `memory` and `busbar-store-memory`. The migration reports the removal
-without resolving or displaying the discarded value; repeating it makes no further change.
+Blank settings, `null` and `{}` use host resource admission. The optional positive
+`input_budget_bytes` setting supplies an explicit native request allocation budget;
+unknown settings are refused. No secret references are required.
+
+Ordinary startup uses the same door's configuration migration to remove the formerly ignored
+`store.settings.token` before secret resolution. The conversion never resolves or displays its
+value; repeating it changes nothing.
 
 ## Versioning
 
@@ -61,9 +63,8 @@ failing test fails the build in both.
 
 ## Differences from 1.5.5
 
-Credential removal now wipes secret buffers before freeing them, including key deletion and
-tombstone cascades. Credential retry comparisons avoid allocating an extra secret copy. These
-changes harden process-memory hygiene without changing valid credential operations.
+The normal door now exposes the neutral primitive Store contract. Domain operations run in
+core over the shared persistence owners. There is no typed Store backend or alternate runtime.
 
 ## License
 

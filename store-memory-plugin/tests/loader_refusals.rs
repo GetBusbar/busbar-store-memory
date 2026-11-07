@@ -34,8 +34,8 @@ use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{Door as AbiDoor, DoorParts, Statement};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_plugin_loader::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
-    transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret,
+    store_v4::StoreV4 as Store, transport::Transport,
 };
 use busbar_plugin_loader::dispatch::{
     load_dropped, load_linked, rendering_of_macro, DispatchConfig, Dispatcher, LinkedRow, LoadError,
@@ -185,9 +185,6 @@ fn the_real_store_refuses_every_other_kind_through_both_doors() {
     wrong_kind::<Transport>();
 }
 
-fn mint() -> busbar_contract::abi::store::OpId {
-    busbar_contract::abi::store::OpId::from_parts(0xead1, 1)
-}
 #[derive(Default)]
 struct ReadyWitness {
     ready_calls: u64,
@@ -244,7 +241,7 @@ fn failed_ready_closes_the_real_opened_store_once() {
     let mut ops = unsafe {
         original
             .ops
-            .cast::<busbar_contract::abi::store::Ops>()
+            .cast::<busbar_contract::abi::store::v4::Ops>()
             .read_unaligned()
     };
     *READY_WITNESS.lock().unwrap() = ReadyWitness {
@@ -262,18 +259,23 @@ fn failed_ready_closes_the_real_opened_store_once() {
     let d = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(&LinkedRow::of_raw(malformed).unwrap(), bind(&d)).unwrap();
     assert!(p.has_ready());
-    let name = p.name().to_owned();
     let held = Arc::clone(&p.inner);
     let first = || held.crossings.load(Ordering::SeqCst) - held.resumes.load(Ordering::SeqCst);
     let before = first();
-    let err = busbar_plugin_loader::store_v3::LoadedStore::open(p, d, b"{}", mint)
-        .map(|_| ())
-        .unwrap_err();
+    let err = support::block(busbar_plugin_loader::store_v4::LoadedPersistence::open(
+        p,
+        d,
+        b"{}",
+        support::limits(),
+    ))
+    .map(|_| ())
+    .unwrap_err();
+    assert_eq!(err, "primitive store ready failed");
     assert_eq!(
-        err,
-        format!("plugin '{name}' ready failed: {READY_FAILURE}")
+        first() - before,
+        4,
+        "OPEN, metadata answer release, failed READY, cleanup CLOSE"
     );
-    assert_eq!(first() - before, 3, "OPEN, failed READY, cleanup CLOSE");
     let w = READY_WITNESS.lock().unwrap();
     assert_eq!(w.ready_calls, 1, "failing READY is not retried");
     assert_eq!(w.close_calls, 1, "successful OPEN is closed exactly once");

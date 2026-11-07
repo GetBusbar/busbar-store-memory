@@ -1,10 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": [
-    "object",
-    "null"
-  ],
+  "type": ["object", "null"],
   "additionalProperties": false,
   "default": {},
-  "properties": {}
+  "properties": {
+    "input_budget_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Explicit native request allocation budget; omitted uses host admission."
+    }
+  }
 }

@@ -42,7 +42,7 @@ fn actual_linked_and_dropped_doors_remove_ignored_token_before_open() {
             Migrated::unchanged(json!({}))
         );
         // Both actual lifecycle doors accept the migrated empty settings.
-        let _opened = support::open(dropped);
+        let _opened = support::block(support::open(dropped));
     }
 }
 

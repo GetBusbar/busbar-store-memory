@@ -6,31 +6,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The in-memory (RAM) backend for busbar's governance store — ephemeral, zero-setup."
+description = "The ephemeral in-memory backend for neutral Store persistence primitives."
 
 [lints]
 workspace = true
 
 [lib]
-# rlib: the LINKED door (a busbar build holds this crate's store v3 `door` as its compiled-in row,
-# `linked::STORE`). The DROPPED-IN door is the sibling `busbar-store-memory-plugin` cdylib, which
-# holds the one `export_door!`; this crate stays `forbid(unsafe_code)` and defines no door symbol.
+# The logic crate exposes the same primitive door used by linked registration;
+# the sibling cdylib owns the single exported plugin symbol.
 crate-type = ["rlib"]
 
 # DEPENDENCY POLICY. A plugin's busbar closure is busbar-contract and nothing else; third-party crates
 # come from the workspace table (`{ workspace = true }`), which is busbar's dependency policy.
 [dependencies]
-# The record half of the store protocol. `busbar_contract::abi::sdk::store::StoreSlots` declares
-# `record_put`, `record_get` and `record_scan` for a plane's kernel-held durable records, and this
-# backend answers them at the contract's own spelling. busbar-contract is the ONE busbar crate a
-# plugin names, pinned by git rev to the busbar commit in `.busbar-ref` (the workspace row).
+# Runtime dependency stays neutral: the contract only, with no kernel/loader edge.
 busbar-contract = { workspace = true }
-# The store takes no settings; `validate`/`open` parse them only to refuse malformed JSON and keys.
+# Lifecycle settings carry only an explicit native input allocation budget.
 serde_json = { workspace = true }
 zeroize = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 jsonschema = { workspace = true }
-# The conformance suites (tests/) serialise typed rows into the opaque `PlaneRecord` body as core
-# does; that is all they need serde for.
-serde = { workspace = true }
