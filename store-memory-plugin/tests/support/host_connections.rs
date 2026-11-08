@@ -118,8 +118,13 @@ fn with_an_outbound_need(real: DoorParts) -> DoorParts {
         needs_len: needs.len(),
         ..st
     }));
+    // The fixture requests connector work during a real loader crossing.
+    let mut ops = unsafe { *real.ops.cast::<busbar_contract::abi::store::v4::Ops>() };
+    ops.head.tick = Some(probe_tick);
+    let ops = Box::leak(Box::new(ops));
     DoorParts {
         statement: st,
+        ops: std::ptr::from_ref(ops).cast(),
         ..real
     }
 }
@@ -131,12 +136,12 @@ use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::conn::ConnError;
 use busbar_plugin_loader::dispatch::conn_services::CONN_SLOTS;
 use std::ffi::c_void;
-fn head(op: u32, size: usize) -> ServiceHead {
+fn head(op: u32, size: usize, ticket: Ticket) -> ServiceHead {
     ServiceHead {
         size: u32::try_from(size).unwrap_or(u32::MAX),
         op,
         handle: CompletionHandle {
-            ticket: Ticket::NONE,
+            ticket,
             seq: 0,
             _reserved: 0,
         },
@@ -166,32 +171,33 @@ fn establish(
     need: u32,
     target: &str,
 ) -> (Outcome, u64, String) {
-    let none = AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    };
-    let i = EstablishIn {
-        head: head(service::ESTABLISH, std::mem::size_of::<EstablishIn>()),
-        need,
-        timeout_ms: 5_000,
-        target: AbiStr {
-            ptr: target.as_ptr(),
-            len: target.len(),
-        },
-        within: none,
-        member: none,
-    };
-    let mut o = out();
-    let f = CONN_SLOTS.establish.expect("the host offers ESTABLISH");
-    // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
-    let raw = unsafe {
-        f(
-            p.inner.ctx(),
-            std::ptr::from_ref(&i).cast::<c_void>(),
-            &mut o,
-        )
-    };
-    answered(raw, &o)
+    let target = target.to_owned();
+    crossing(p, move |ctx, ticket| {
+        let none = AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        };
+        let i = EstablishIn {
+            head: head(
+                service::ESTABLISH,
+                std::mem::size_of::<EstablishIn>(),
+                ticket,
+            ),
+            need,
+            timeout_ms: 5_000,
+            target: AbiStr {
+                ptr: target.as_ptr(),
+                len: target.len(),
+            },
+            within: none,
+            member: none,
+        };
+        let mut o = out();
+        let f = CONN_SLOTS.establish.expect("the host offers ESTABLISH");
+        // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
+        let raw = unsafe { f(ctx, std::ptr::from_ref(&i).cast::<c_void>(), &mut o) };
+        answered(raw, &o)
+    })
 }
 
 fn io(
@@ -199,62 +205,69 @@ fn io(
     stream: u64,
     write: bool,
 ) -> (Outcome, u64, String) {
-    let mut buf = *b"x";
-    let (op, f) = if write {
-        (service::WRITE, CONN_SLOTS.write)
-    } else {
-        (service::READ, CONN_SLOTS.read)
-    };
-    let i = IoIn {
-        head: head(op, std::mem::size_of::<IoIn>()),
-        stream,
-        buf: buf.as_mut_ptr(),
-        len: buf.len(),
-    };
-    let mut o = out();
-    // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let raw = unsafe {
-            f.expect("the host offers READ and WRITE")(
-                p.inner.ctx(),
-                std::ptr::from_ref(&i).cast::<c_void>(),
-                &mut o,
-            )
+    crossing(p, move |ctx, ticket| {
+        let mut buf = *b"x";
+        let (op, f) = if write {
+            (service::WRITE, CONN_SLOTS.write)
+        } else {
+            (service::READ, CONN_SLOTS.read)
         };
-        let answer = answered(raw, &o);
-        if answer.0 != Outcome::Pending || std::time::Instant::now() >= until {
-            return answer;
+        let i = IoIn {
+            head: head(op, std::mem::size_of::<IoIn>(), ticket),
+            stream,
+            buf: buf.as_mut_ptr(),
+            len: buf.len(),
+        };
+        let mut o = out();
+        // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let raw = unsafe {
+                f.expect("the host offers READ and WRITE")(
+                    ctx,
+                    std::ptr::from_ref(&i).cast::<c_void>(),
+                    &mut o,
+                )
+            };
+            let answer = answered(raw, &o);
+            if answer.0 != Outcome::Pending || std::time::Instant::now() >= until {
+                return answer;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    })
 }
 
 fn close_stream(
     p: &busbar_plugin_loader::dispatch::Plugin<Store>,
     stream: u64,
 ) -> (Outcome, u64, String) {
-    let i = StreamIn {
-        head: head(service::CLOSE, std::mem::size_of::<StreamIn>()),
-        stream,
-    };
-    let mut o = out();
-    // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
-    let raw = unsafe {
-        CONN_SLOTS.close.expect("the host offers CLOSE")(
-            p.inner.ctx(),
-            std::ptr::from_ref(&i).cast::<c_void>(),
-            &mut o,
-        )
-    };
-    answered(raw, &o)
+    crossing(p, move |ctx, ticket| {
+        let i = StreamIn {
+            head: head(service::CLOSE, std::mem::size_of::<StreamIn>(), ticket),
+            stream,
+        };
+        let mut o = out();
+        // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
+        let raw = unsafe {
+            CONN_SLOTS.close.expect("the host offers CLOSE")(
+                ctx,
+                std::ptr::from_ref(&i).cast::<c_void>(),
+                &mut o,
+            )
+        };
+        answered(raw, &o)
+    })
 }
 
 #[test]
 fn actual_memory_contexts_refuse_undeclared_needs_and_foreign_connections() {
     let _lock = METADATA.lock().unwrap_or_else(|poison| poison.into_inner());
     restate(with_an_outbound_need(real()));
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let table: Arc<dyn DeclaredConns> = Arc::new(OwnershipValues::default());
     let row = LinkedRow::of_raw(malformed).expect("actual door with only one restated need");
     let owner = load_linked::<Store>(
@@ -273,6 +286,8 @@ fn actual_memory_contexts_refuse_undeclared_needs_and_foreign_connections() {
         },
     )
     .unwrap();
+    open(&owner);
+    open(&other);
     let (answer, stream, text) = establish(&owner, 0, "ownership-value");
     assert_eq!(answer, Outcome::Ready, "declared need opens: {text}");
     assert_eq!(close_stream(&owner, stream).0, Outcome::Ready);
@@ -304,4 +319,90 @@ fn actual_memory_contexts_refuse_undeclared_needs_and_foreign_connections() {
         "owner connection untouched"
     );
     assert_eq!(close_stream(&owner, stream).0, Outcome::Ready);
+    close(&owner);
+    close(&other);
+}
+
+// The fixture runs inside the ordinary loader's TICK, so production phase and
+// ticket checks stay enabled. No fixture can enter the authority scope directly.
+type Answer = (Outcome, u64, String);
+type Probe = Box<dyn FnOnce(Ticket) -> Answer + Send>;
+static PROBE: std::sync::Mutex<Option<Probe>> = std::sync::Mutex::new(None);
+static ANSWER: std::sync::Mutex<Option<Answer>> = std::sync::Mutex::new(None);
+unsafe extern "C" fn probe_tick(
+    _: *mut c_void,
+    input: *const c_void,
+    output: *mut c_void,
+) -> RawOutcome {
+    // SAFETY: the loader lends the lifecycle frame for the synchronous callback.
+    let ticket = unsafe {
+        (*input.cast::<busbar_contract::abi::mechanism::lifecycle::TickIn>())
+            .head
+            .ticket
+    };
+    let probe = PROBE.lock().unwrap().take().unwrap();
+    *ANSWER.lock().unwrap() = Some(probe(ticket));
+    unsafe {
+        (*output.cast::<busbar_contract::abi::mechanism::lifecycle::TickOut>())
+            .head
+            .outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+fn crossing(
+    p: &busbar_plugin_loader::dispatch::Plugin<Store>,
+    f: impl FnOnce(busbar_contract::abi::mechanism::ticket::HostCtx, Ticket) -> Answer + Send + 'static,
+) -> Answer {
+    use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+    let ctx = p.test_host_context();
+    assert!(PROBE
+        .lock()
+        .unwrap()
+        .replace(Box::new(move |ticket| f(ctx, ticket)))
+        .is_none());
+    let mut frame = busbar_plugin_loader::dispatch::Frame::new(
+        TickIn {
+            head: busbar_plugin_loader::dispatch::in_head(),
+            now_ns: 0,
+        },
+        TickOut {
+            head: busbar_plugin_loader::dispatch::out_head(),
+            next_tick_ns: 0,
+        },
+    );
+    assert_eq!(p.call(slot::TICK, &mut frame).outcome, Outcome::Ready);
+    ANSWER.lock().unwrap().take().unwrap()
+}
+
+fn open(p: &busbar_plugin_loader::dispatch::Plugin<Store>) {
+    use busbar_contract::abi::mechanism::{
+        call::Blob,
+        lifecycle::{slot, OpenIn, OpenOut},
+    };
+    use busbar_plugin_loader::dispatch::{in_head, out_head, Frame};
+    // SAFETY: lifecycle frames are plain C data with nullable pointer fields.
+    let mut input: OpenIn = unsafe { std::mem::zeroed() };
+    let mut output: OpenOut = unsafe { std::mem::zeroed() };
+    input.head = in_head();
+    output.head = out_head();
+    input.generation = 1;
+    input.settings = Blob {
+        ptr: b"{}".as_ptr(),
+        len: 2,
+        fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
+        flags: 0,
+    };
+    let called = p.call(slot::OPEN, &mut Frame::new(input, output));
+    assert_eq!(called.outcome, Outcome::Ready, "{called:?}");
+}
+fn close(p: &busbar_plugin_loader::dispatch::Plugin<Store>) {
+    use busbar_plugin_loader::dispatch::{in_head, out_head, Frame};
+    assert_eq!(
+        p.call(
+            busbar_contract::abi::mechanism::lifecycle::slot::CLOSE,
+            &mut Frame::new(in_head(), out_head())
+        )
+        .outcome,
+        Outcome::Ready
+    );
 }

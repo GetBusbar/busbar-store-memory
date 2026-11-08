@@ -9,7 +9,7 @@
 mod migration;
 
 /// The native primitive backend and its actual lifecycle door.
-pub mod v4;
+mod v4;
 
 /// Actual primitive door used by linked registration and the plugin export.
 pub use v4::{door, MACRO_DOOR};

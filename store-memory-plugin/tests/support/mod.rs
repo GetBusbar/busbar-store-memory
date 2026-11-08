@@ -54,7 +54,10 @@ fn bound(
     dispatch::Plugin<dispatch::kinds::store_v4::StoreV4>,
     Arc<Dispatcher>,
 ) {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let bind = Bind {
         instance: Arc::from("memory-product"),
         max_inflight_cap: 1024,
@@ -88,7 +91,10 @@ pub async fn open(dropped: bool) -> LoadedPersistence {
 }
 pub async fn open_axis() -> Arc<dyn PersistenceBackend> {
     let axis = DoorPersistenceAxis {
-        dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
+        dispatcher: Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        )),
         logs: dispatch::PluginLogConfig::from_words(None, None, &Default::default(), None, None)
             .expect("default logs"),
         conns: ConnTable::NoNeeds,

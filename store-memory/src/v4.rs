@@ -607,7 +607,11 @@ impl Backend for MemoryV4 {
     fn validate(input: &[u8]) -> Result<(), String> {
         settings(input).map(drop)
     }
-    fn open(input: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Self, String> {
+    fn open(
+        input: &[u8],
+        _: &[&[u8]],
+        _: Option<Host<busbar_contract::plugin::markers::StoreKind>>,
+    ) -> Result<Self, String> {
         Ok(Self {
             owner: Own::here(),
             budget: settings(input)?,

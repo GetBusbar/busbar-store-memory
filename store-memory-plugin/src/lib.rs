@@ -5,7 +5,7 @@
 
 #![deny(unsafe_code)]
 
-pub use busbar_store_memory::*;
+pub use busbar_store_memory::{door, linked, MACRO_DOOR};
 
 /// The exported door: the macro's `#[unsafe(no_mangle)]` symbol is an exemption.
 #[allow(unsafe_code)]

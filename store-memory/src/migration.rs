@@ -7,6 +7,7 @@ use busbar_contract::abi::sdk::migrate::{Migrate, Migrated};
 pub(crate) struct MemoryMigration;
 
 impl Migrate for MemoryMigration {
+    type Kind = busbar_contract::plugin::markers::StoreKind;
     fn migrate(mut settings: serde_json::Value, _from: &str) -> Migrated {
         let removed = settings
             .as_object_mut()

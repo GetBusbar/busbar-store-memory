@@ -24,6 +24,7 @@ busbar-store-memory = { path = "../store-memory" }
 busbar-contract = { workspace = true }
 
 [dev-dependencies]
-busbar-plugin-loader = { workspace = true }
+busbar-contract = { workspace = true, features = ["test-seal"] }
+busbar-plugin-loader = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "time", "net"] }
 serde_json = { workspace = true }

@@ -49,7 +49,7 @@ extern "C" fn malformed() -> *const AbiDoor {
 }
 fn real() -> DoorParts {
     // SAFETY: the shipped macro door owns a complete immutable static descriptor.
-    unsafe { AbiDoor::read_parts(busbar_store_memory::door()) }
+    busbar_store_memory::door().parts()
 }
 fn restate(parts: DoorParts) {
     // SAFETY: all pointers remain those of the actual product or leaked immutable test metadata.
@@ -60,7 +60,10 @@ fn restate(parts: DoorParts) {
 #[test]
 fn incompatible_abi_layout_and_statement_metadata_are_refused() {
     let _lock = METADATA.lock().unwrap_or_else(|poison| poison.into_inner());
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let honest = rendering_of_macro(MACRO_DOOR).unwrap();
     for by in [Door::Linked, Door::Dropped] {
         load::<Store>(by, &d).expect("honest memory loads");
@@ -164,7 +167,10 @@ fn incompatible_abi_layout_and_statement_metadata_are_refused() {
 }
 
 fn wrong_kind<K: busbar_plugin_loader::dispatch::Kind>() {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     for by in [Door::Linked, Door::Dropped] {
         assert_eq!(
             load::<K>(by, &d).map(|_| ()).unwrap_err(),
@@ -256,11 +262,17 @@ fn failed_ready_closes_the_real_opened_store_once() {
         ops: std::ptr::from_ref(ops).cast(),
         ..original
     });
-    let d = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let d = std::sync::Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let p = load_linked::<Store>(&LinkedRow::of_raw(malformed).unwrap(), bind(&d)).unwrap();
     assert!(p.has_ready());
-    let held = Arc::clone(&p.inner);
-    let first = || held.crossings.load(Ordering::SeqCst) - held.resumes.load(Ordering::SeqCst);
+    let probe = p.test_invocation_probe();
+    let first = || {
+        let (crossings, resumes) = probe();
+        crossings - resumes
+    };
     let before = first();
     let err = support::block(busbar_plugin_loader::store_v4::LoadedPersistence::open(
         p,
