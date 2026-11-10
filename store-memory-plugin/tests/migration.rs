@@ -19,9 +19,15 @@ fn convert(dropped: bool, settings: &Value) -> Migrated {
     } else {
         migrate::migrate_door(raw(busbar_store_memory::door), settings, "1.5.5")
     };
-    answer
+    let answer = answer
         .expect("actual door migrates")
-        .expect("migration is declared")
+        .expect("migration is declared");
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    Migrated {
+        settings: serde_json::to_value(answer.authoring(&seal)).unwrap(),
+        report: answer.report,
+        needs: answer.needs,
+    }
 }
 
 #[test]

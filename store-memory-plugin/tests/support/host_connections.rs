@@ -273,7 +273,13 @@ fn actual_memory_contexts_refuse_undeclared_needs_and_foreign_connections() {
     let owner = load_linked::<Store>(
         &row,
         busbar_plugin_loader::dispatch::Bind {
-            conns: busbar_plugin_loader::dispatch::ConnTable::Host(Arc::clone(&table)),
+            conns: busbar_plugin_loader::dispatch::ConnTable::Host(
+                busbar_contract::conn::admissions::AdmissionAuthority::issue(
+                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                    Arc::clone(&table),
+                    busbar_contract::secret_ref::Sugars::default(),
+                ),
+            ),
             ..bind(&d)
         },
     )
@@ -281,7 +287,13 @@ fn actual_memory_contexts_refuse_undeclared_needs_and_foreign_connections() {
     let other = load_linked::<Store>(
         &row,
         busbar_plugin_loader::dispatch::Bind {
-            conns: busbar_plugin_loader::dispatch::ConnTable::Host(table),
+            conns: busbar_plugin_loader::dispatch::ConnTable::Host(
+                busbar_contract::conn::admissions::AdmissionAuthority::issue(
+                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                    table,
+                    busbar_contract::secret_ref::Sugars::default(),
+                ),
+            ),
             ..bind(&d)
         },
     )
