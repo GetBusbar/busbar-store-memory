@@ -209,11 +209,14 @@ impl MemoryV4 {
                 (
                     lifecycle::InspectionState::Current,
                     Some(self.source_identity()),
-                    Some(protected(marker, &self.owner).map_err(|_| lifecycle::Error::Bounds)?),
+                    Some(
+                        protected(marker, &self.owner)
+                            .map_err(|_| lifecycle::Error::Unavailable)?,
+                    ),
                 )
             }
         };
-        let mut capabilities = reserve(1).map_err(|_| lifecycle::Error::Bounds)?;
+        let mut capabilities = reserve(1).map_err(|_| lifecycle::Error::Unavailable)?;
         capabilities.push(lifecycle::NativeCapability::CurrentOpen);
         Ok(lifecycle::Response::Inspected(lifecycle::Inspection {
             state,
