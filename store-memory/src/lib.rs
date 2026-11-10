@@ -24,5 +24,3 @@ pub mod linked {
 #[cfg(test)]
 #[path = "tests/settings_schema_tests.rs"]
 mod settings_schema_tests;
-
-include!(concat!(env!("OUT_DIR"), "/root_test_source.rs"));
