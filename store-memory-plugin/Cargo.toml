@@ -28,3 +28,7 @@ busbar-contract = { workspace = true, features = ["test-seal"] }
 busbar-plugin-loader = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "time", "net"] }
 serde_json = { workspace = true }
+
+[package.metadata.busbar.test-artifacts]
+cdylib = ["BUSBAR_TEST_MEMORY_STORE_CDYLIB", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"]
+empty-settings = ["BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS"]
