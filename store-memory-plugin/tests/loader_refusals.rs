@@ -204,6 +204,7 @@ static READY_WITNESS: std::sync::Mutex<ReadyWitness> = std::sync::Mutex::new(Rea
     close_calls: 0,
     close_answer: None,
 });
+static READY_CLOSED: std::sync::Condvar = std::sync::Condvar::new();
 const READY_FAILURE: &str = "conformance: discovery refused";
 extern "C" fn ready_close(
     instance: *mut std::ffi::c_void,
@@ -218,6 +219,7 @@ extern "C" fn ready_close(
     // SAFETY: forwards the real live instance and complete frames to its original CLOSE exactly once.
     let answer = unsafe { close(instance, input, out) };
     READY_WITNESS.lock().unwrap().close_answer = Some(answer.outcome());
+    READY_CLOSED.notify_all();
     answer
 }
 extern "C" fn ready_fails(
@@ -283,12 +285,25 @@ fn failed_ready_closes_the_real_opened_store_once() {
     .map(|_| ())
     .unwrap_err();
     assert_eq!(err, "primitive store ready failed");
+    // READY publishes its answer before the worker releases the retained session
+    // outside its state lock. Observe the real CLOSE completion before teardown
+    // assertions; returning from OPEN alone does not synchronize that release.
+    let (w, _) = READY_CLOSED
+        .wait_timeout_while(
+            READY_WITNESS.lock().unwrap(),
+            std::time::Duration::from_secs(5),
+            |w| w.close_answer.is_none(),
+        )
+        .unwrap();
+    assert!(
+        w.close_answer.is_some(),
+        "failed READY must finish cleanup CLOSE"
+    );
     assert_eq!(
         first() - before,
         4,
         "OPEN, metadata answer release, failed READY, cleanup CLOSE"
     );
-    let w = READY_WITNESS.lock().unwrap();
     assert_eq!(w.ready_calls, 1, "failing READY is not retried");
     assert_eq!(w.close_calls, 1, "successful OPEN is closed exactly once");
     assert_eq!(
