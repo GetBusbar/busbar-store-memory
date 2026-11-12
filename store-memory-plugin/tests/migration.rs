@@ -23,11 +23,20 @@ fn convert(dropped: bool, settings: &Value) -> Migrated {
         .expect("actual door migrates")
         .expect("migration is declared");
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    Migrated {
-        settings: serde_json::to_value(answer.authoring(&seal)).unwrap(),
-        report: answer.report,
-        needs: answer.needs,
-    }
+    Migrated::new(
+        serde_json::to_value(answer.authoring(&seal)).unwrap(),
+        answer.report,
+        answer.needs,
+    )
+}
+
+/// The settings a sealed [`Migrated`] carries, read back under the dev-only test kernel seal.
+fn settings_of(answer: &Migrated) -> serde_json::Value {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    serde_json::to_value(
+        busbar_contract::abi::sdk::migrate::MigrationAnswer::from(answer.clone()).authoring(&seal),
+    )
+    .expect("migrated settings serialize")
 }
 
 #[test]
@@ -37,14 +46,14 @@ fn actual_linked_and_dropped_doors_remove_ignored_token_before_open() {
             dropped,
             &json!({"token": {"env": "UNAVAILABLE_MEMORY_TOKEN_SENTINEL"}}),
         );
-        assert_eq!(answer.settings, json!({}));
+        assert_eq!(settings_of(&answer), json!({}));
         assert_eq!(
             answer.report,
             ["removed settings.token: the memory store never used this setting"]
         );
         assert!(answer.needs.is_empty());
         assert_eq!(
-            convert(dropped, &answer.settings),
+            convert(dropped, &settings_of(&answer)),
             Migrated::unchanged(json!({}))
         );
         // Both actual lifecycle doors accept the migrated empty settings.
@@ -63,6 +72,6 @@ fn both_config_names_register_the_migrating_store_door() {
         .expect("migrating Store Statement");
     assert_eq!(row.statement, actual.statement);
     let answer = convert(false, &json!({"token": null}));
-    assert_eq!(answer.settings, json!({}));
+    assert_eq!(settings_of(&answer), json!({}));
     assert_eq!(answer.report.len(), 1);
 }
